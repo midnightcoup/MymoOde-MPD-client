@@ -6,7 +6,7 @@ header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-cache, must-revalidate');
 
 @ini_set('max_execution_time', '300');
-@ini_set('memory_limit', '256M');
+@ini_set('memory_limit', '128M');
 
 define('HIFI_CACHE_DIR', '/var/www/vumeter/cache');
 define('HIFI_DEFAULT_SETTINGS', '/var/www/vumeter/cache/default_settings.json');
@@ -14,7 +14,6 @@ define('MOODE_DB_PATH', '/var/local/www/db/moode-sqlite3.db');
 
 $action = $_GET['action'] ?? 'status';
 
-// Definiamo le azioni amministrative che NON hanno bisogno del server audio MPD
 $no_mpd_actions = [
     'sys_control', 'sys_optimize', 'get_default_settings', 'set_default_settings', 
     'save_client_settings', 'get_client_settings', 'delete_client_settings', 
@@ -23,76 +22,42 @@ $no_mpd_actions = [
 
 $socket = null;
 
-// Ci connettiamo a MPD solo se l'azione richiesta ne ha effettivamente bisogno
 if (!in_array($action, $no_mpd_actions)) {
     $socket = @fsockopen('127.0.0.1', 6600, $errno, $errstr, 2);
     if (!$socket) {
         echo json_encode(['success' => false, 'error' => 'MPD Offline o Rifiutato']);
         exit;
     }
-    // Consuma la prima riga di benvenuto di MPD
     fgets($socket);
 }
 
-/**
- * Invia un comando al server MPD tramite socket e ne legge la risposta.
- *
- * @param resource $socket Connessione socket attiva.
- * @param string $command Comando da inviare (es. 'status', 'currentsong').
- * @return string Risposta grezza dal server MPD.
- */
 function send_mpd_command($socket, $command) {
     fwrite($socket, $command . "\n");
     $response = '';
     while (!feof($socket)) {
         $line = fgets($socket);
-        if ($line === false || strncasecmp($line, 'OK', 2) === 0 || strncasecmp($line, 'ACK', 3) === 0) {
-            break;
-        }
+        if ($line === false || strncasecmp($line, 'OK', 2) === 0 || strncasecmp($line, 'ACK', 3) === 0) break;
         $response .= $line;
     }
     return $response;
 }
 
-/**
- * Genera il percorso assoluto per un file di cache basato su un hash.
- *
- * @param string $key Chiave identificativa (es. percorso della cartella).
- * @return string Percorso del file JSON generato.
- */
 function get_cache_file_path($key) {
-    if (!is_dir(HIFI_CACHE_DIR)) {
-        @mkdir(HIFI_CACHE_DIR, 0775, true);
-    }
+    if (!is_dir(HIFI_CACHE_DIR)) @mkdir(HIFI_CACHE_DIR, 0775, true);
     return HIFI_CACHE_DIR . '/' . md5($key) . '.json';
 }
 
-/**
- * Recupera i dati dalla cache se validi, altrimenti esegue la callback per rigenerarli.
- *
- * @param string $key Chiave univoca della cache.
- * @param int $ttl_seconds Tempo di vita della cache in secondi.
- * @param callable $callback Funzione anonima da eseguire se la cache è scaduta.
- * @return mixed Dati elaborati (array o object).
- */
 function get_cached_data($key, $ttl_seconds, $callback) {
     $file = get_cache_file_path($key);
-
     if (file_exists($file) && (time() - filemtime($file)) < $ttl_seconds) {
         $cached = json_decode(@file_get_contents($file), true);
         if ($cached !== null) return $cached;
     }
-
     $data = $callback();
     @file_put_contents($file, json_encode($data));
     return $data;
 }
 
-/**
- * Instanzia la connessione al database SQLite nativo di moOde.
- *
- * @return SQLite3|null Istanza del DB o null se inaccessibile.
- */
 function get_moode_db() {
     if (file_exists(MOODE_DB_PATH)) {
         $db = new SQLite3(MOODE_DB_PATH);
@@ -102,237 +67,131 @@ function get_moode_db() {
     return null;
 }
 
-/**
- * Tenta di individuare e restituire l'URL di una copertina in base al percorso file.
- * Cerca in diverse cartelle di sistema e utilizza l'hash md5 ove necessario.
- *
- * @param string $file Percorso del file musicale o URL dello stream.
- * @return string URL della copertina o stringa vuota se non trovata.
- */
 function get_cached_cover_url($file) {
     if (empty($file)) return '';
-
-    // Se è già un URL remoto valido, evita elaborazioni
-    if (strpos($file, 'http://') === 0 || strpos($file, 'https://') === 0) {
-        return '';
-    }
+    if (strpos($file, 'http://') === 0 || strpos($file, 'https://') === 0) return '';
 
     $dir_path = dirname($file);
     $file_base = pathinfo($file, PATHINFO_FILENAME);
-
     $rel_dir = ltrim($dir_path, '/');
     $encoded_dir = implode('/', array_map('rawurlencode', explode('/', $rel_dir)));
-    $encoded_file = implode('/', array_map('rawurlencode', explode('/', ltrim($file, '/'))));
-
     $hash = md5($rel_dir);
     
     $path_upper = strtoupper($file);
     $is_radio = (strpos($path_upper, 'RADIO') !== false || strpos($path_upper, 'WEBRADIO') !== false);
     $is_playlist = (substr($path_upper, -4) === '.M3U' || substr($path_upper, -4) === '.PLS' || substr($path_upper, -5) === '.M3U8');
 
-    // Gestione Playlist
-    if ($is_playlist) {
-        if (@file_exists('/var/local/www/imagesw/playlist-covers/' . $file_base . '.jpg')) {
-            return '/imagesw/playlist-covers/' . rawurlencode($file_base) . '.jpg';
-        }
+    if ($is_playlist && @file_exists('/var/local/www/imagesw/playlist-covers/' . $file_base . '.jpg')) {
+        return '/imagesw/playlist-covers/' . rawurlencode($file_base) . '.jpg';
     }
 
-    // Ricerca diretta in cache (Brani locali)
     if (!$is_radio && !$is_playlist) {
-        if (@file_exists('/var/local/www/imagesw/thmcache/' . $hash . '.jpg')) {
-            return '/imagesw/thmcache/' . $hash . '.jpg';
-        }
+        if (@file_exists('/var/local/www/imagesw/thmcache/' . $hash . '.jpg')) return '/imagesw/thmcache/' . $hash . '.jpg';
         if (@file_exists(HIFI_CACHE_DIR . '/' . $hash . '.jpg')) return 'cache/' . $hash . '.jpg';
         if (@file_exists(HIFI_CACHE_DIR . '/' . $hash . '.jpeg')) return 'cache/' . $hash . '.jpeg';
         if (@file_exists(HIFI_CACHE_DIR . '/' . $hash . '.png')) return 'cache/' . $hash . '.png';
     }
 
     $abs_dir = '/mnt/MPD/' . $rel_dir;
-    if (!is_dir($abs_dir)) {
-        $abs_dir = '/var/lib/mpd/music/' . $rel_dir;
-    }
+    if (!is_dir($abs_dir)) $abs_dir = '/var/lib/mpd/music/' . $rel_dir;
 
-    // Gestione Loghi Radio (Ricerca Multi-Cartella)
     if ($is_radio) {
         $radio_search_names = [$file_base, basename($file)];
         foreach ($radio_search_names as $r_name) {
             if (empty($r_name)) continue;
             $clean_r_name = pathinfo($r_name, PATHINFO_FILENAME);
-            
-            if (@file_exists('/var/local/www/imagesw/radio-logos/thumbs/' . $clean_r_name . '.jpg')) {
-                return '/imagesw/radio-logos/thumbs/' . rawurlencode($clean_r_name) . '.jpg';
-            }
-            if (@file_exists('/var/local/www/imagesw/radio-logos/' . $clean_r_name . '.jpg')) {
-                return '/imagesw/radio-logos/' . rawurlencode($clean_r_name) . '.jpg';
-            }
-            if (@file_exists('/var/local/www/imagesw/rb-logos/thumbs/' . $clean_r_name . '.jpg')) {
-                return '/imagesw/rb-logos/thumbs/' . rawurlencode($clean_r_name) . '.jpg';
-            }
-            if (@file_exists('/var/local/www/imagesw/rb-logos/' . $clean_r_name . '.jpg')) {
-                return '/imagesw/rb-logos/' . rawurlencode($clean_r_name) . '.jpg';
-            }
-            if (@file_exists('/var/local/www/imagesw/rb-logos/' . $clean_r_name . '.png')) {
-                return '/imagesw/rb-logos/' . rawurlencode($clean_r_name) . '.png';
-            }
+            if (@file_exists('/var/local/www/imagesw/radio-logos/thumbs/' . $clean_r_name . '.jpg')) return '/imagesw/radio-logos/thumbs/' . rawurlencode($clean_r_name) . '.jpg';
+            if (@file_exists('/var/local/www/imagesw/radio-logos/' . $clean_r_name . '.jpg')) return '/imagesw/radio-logos/' . rawurlencode($clean_r_name) . '.jpg';
+            if (@file_exists('/var/local/www/imagesw/rb-logos/thumbs/' . $clean_r_name . '.jpg')) return '/imagesw/rb-logos/thumbs/' . rawurlencode($clean_r_name) . '.jpg';
+            if (@file_exists('/var/local/www/imagesw/rb-logos/' . $clean_r_name . '.jpg')) return '/imagesw/rb-logos/' . rawurlencode($clean_r_name) . '.jpg';
+            if (@file_exists('/var/local/www/imagesw/rb-logos/' . $clean_r_name . '.png')) return '/imagesw/rb-logos/' . rawurlencode($clean_r_name) . '.png';
         }
     }
 
-    // Lettura Cartelle Fisiche alla ricerca di file generici (folder.jpg, cover.jpg)
     if (is_dir($abs_dir)) {
         $specific_imgs = [$file_base . '.jpg', $file_base . '.png', $file_base . '.jpeg', $file_base . '.gif', $file_base . '.JPG', $file_base . '.PNG'];
         foreach ($specific_imgs as $s_img) {
-            if (@file_exists($abs_dir . '/' . $s_img)) {
-                return '/coverart.php/' . $encoded_dir . '/' . rawurlencode($s_img);
-            }
+            if (@file_exists($abs_dir . '/' . $s_img)) return '/coverart.php/' . $encoded_dir . '/' . rawurlencode($s_img);
         }
-
         $std_names = ['thumb.jpg', 'thumb.png', 'Thumb.jpg', 'Thumb.png', 'folder.jpg', 'cover.jpg', 'front.jpg', 'folder.png', 'cover.png', 'Folder.jpg', 'Cover.jpg', 'Front.jpg'];
         foreach($std_names as $std) {
-            if (@file_exists($abs_dir . '/' . $std)) {
-                return '/coverart.php/' . $encoded_dir . '/' . rawurlencode($std);
-            }
+            if (@file_exists($abs_dir . '/' . $std)) return '/coverart.php/' . $encoded_dir . '/' . rawurlencode($std);
         }
-
         if (!$is_radio) {
             $files = @scandir($abs_dir);
             if ($files) {
                 foreach ($files as $f) {
                     if ($f !== '.' && $f !== '..') {
                         $ext = strtolower(pathinfo($f, PATHINFO_EXTENSION));
-                        if (in_array($ext, ['jpg', 'jpeg', 'png', 'gif'])) {
-                            return '/coverart.php/' . $encoded_dir . '/' . rawurlencode($f);
-                        }
+                        if (in_array($ext, ['jpg', 'jpeg', 'png', 'gif'])) return '/coverart.php/' . $encoded_dir . '/' . rawurlencode($f);
                     }
                 }
             }
         }
     }
-
     return '';
 }
 
-// ==========================================
-// ROUTER DEGLI ENDPOINT (GESTIONE AZIONI)
-// ==========================================
 try {
-    
-    // --- CONTROLLO SERVIZI DI SISTEMA ---
     if ($action === 'sys_control') {
         $cmd = $_GET['cmd'] ?? '';
-        
-        if ($cmd === 'camilladsp_on') {
-            exec('sudo systemctl start camilladsp');
-            echo json_encode(['success' => true, 'state' => 'on']);
-        } 
-        else if ($cmd === 'camilladsp_off') {
-            exec('sudo systemctl stop camilladsp');
-            echo json_encode(['success' => true, 'state' => 'off']);
-        } 
-        else if ($cmd === 'camilladsp_status') {
-            $status = trim(exec('sudo systemctl is-active camilladsp'));
-            echo json_encode(['success' => true, 'active' => ($status === 'active')]);
-        }
-        else {
-            echo json_encode(['success' => false, 'error' => 'Comando sconosciuto']);
-        }
+        if ($cmd === 'camilladsp_on') { exec('sudo systemctl start camilladsp'); echo json_encode(['success' => true, 'state' => 'on']); } 
+        else if ($cmd === 'camilladsp_off') { exec('sudo systemctl stop camilladsp'); echo json_encode(['success' => true, 'state' => 'off']); } 
+        else if ($cmd === 'camilladsp_status') { $status = trim(exec('sudo systemctl is-active camilladsp')); echo json_encode(['success' => true, 'active' => ($status === 'active')]); }
+        else { echo json_encode(['success' => false, 'error' => 'Comando sconosciuto']); }
         exit;
     }
 
-    // --- OTTIMIZZAZIONE IN BACKGROUND ---
     else if ($action === 'sys_optimize') {
         $mode = $_GET['mode'] ?? 'startup';
-
-        if ($mode === 'startup') {
-            exec('pkill -f radiocover_plus.py');
-            echo json_encode(['success' => true, 'message' => 'Ottimizzazione di avvio completata']);
-        } 
-        else if ($mode === 'shutdown') {
-            exec('rm -f ' . HIFI_CACHE_DIR . '/py_*.txt');
-            echo json_encode(['success' => true, 'message' => 'Servizi ripristinati in uscita']);
-        }
+        if ($mode === 'startup') { exec('pkill -f radiocover_plus.py'); echo json_encode(['success' => true, 'message' => 'Ottimizzazione completata']); } 
+        else if ($mode === 'shutdown') { exec('rm -f ' . HIFI_CACHE_DIR . '/py_*.txt'); echo json_encode(['success' => true, 'message' => 'Servizi ripristinati']); }
         exit;
     }
 
-    // --- IMPOSTAZIONI GLOBALI ---
     else if ($action === 'get_default_settings') {
         clearstatcache();
         if (file_exists(HIFI_DEFAULT_SETTINGS)) {
             $settings = json_decode(file_get_contents(HIFI_DEFAULT_SETTINGS), true);
-            if ($settings !== null) {
-                ob_clean();
-                echo json_encode($settings);
-                exit;
-            }
+            if ($settings !== null) { ob_clean(); echo json_encode($settings); exit; }
         }
-        ob_clean();
-        echo json_encode([]);
-        exit;
+        ob_clean(); echo json_encode([]); exit;
     }
 
     else if ($action === 'set_default_settings') {
-        $json = file_get_contents('php://input');
-        $data = json_decode($json, true);
+        $json = file_get_contents('php://input'); $data = json_decode($json, true);
         if ($data !== null) {
-            if (!is_dir(HIFI_CACHE_DIR)) {
-                @mkdir(HIFI_CACHE_DIR, 0775, true);
-            }
-            if (file_put_contents(HIFI_DEFAULT_SETTINGS, json_encode($data, JSON_PRETTY_PRINT))) {
-                echo json_encode(['success' => true]);
-                exit;
-            } else {
-                echo json_encode(['success' => false, 'error' => 'Impossibile scrivere il file.']);
-                exit;
-            }
-        } else {
-            echo json_encode(['success' => false, 'error' => 'Payload JSON non valido.']);
-            exit;
-        }
+            if (!is_dir(HIFI_CACHE_DIR)) @mkdir(HIFI_CACHE_DIR, 0775, true);
+            if (file_put_contents(HIFI_DEFAULT_SETTINGS, json_encode($data, JSON_PRETTY_PRINT))) { echo json_encode(['success' => true]); exit; } 
+            else { echo json_encode(['success' => false, 'error' => 'Impossibile scrivere il file.']); exit; }
+        } else { echo json_encode(['success' => false, 'error' => 'Payload JSON non valido.']); exit; }
     }
 
-    // --- IMPOSTAZIONI SPECIFICHE CLIENT ---
     else if ($action === 'save_client_settings') {
-        $json = file_get_contents('php://input');
-        $data = json_decode($json, true);
-        
+        $json = file_get_contents('php://input'); $data = json_decode($json, true);
         if ($data !== null) {
-            if (!is_dir(HIFI_CACHE_DIR)) {
-                @mkdir(HIFI_CACHE_DIR, 0775, true);
-            }
+            if (!is_dir(HIFI_CACHE_DIR)) @mkdir(HIFI_CACHE_DIR, 0775, true);
             $client_ip = $_SERVER['REMOTE_ADDR'];
             $file = HIFI_CACHE_DIR . '/client_' . md5($client_ip) . '.json';
-            
-            if (file_put_contents($file, json_encode($data, JSON_PRETTY_PRINT))) {
-                echo json_encode(['success' => true]);
-            } else {
-                echo json_encode(['success' => false, 'error' => 'Impossibile scrivere il file.']);
-            }
-        } else {
-            echo json_encode(['success' => false, 'error' => 'Payload JSON non valido.']);
-        }
+            if (file_put_contents($file, json_encode($data, JSON_PRETTY_PRINT))) { echo json_encode(['success' => true]); } 
+            else { echo json_encode(['success' => false, 'error' => 'Impossibile scrivere.']); }
+        } else { echo json_encode(['success' => false, 'error' => 'Payload non valido.']); }
         exit;
     }
 
     else if ($action === 'get_client_settings') {
         $client_ip = $_SERVER['REMOTE_ADDR'];
         $file = HIFI_CACHE_DIR . '/client_' . md5($client_ip) . '.json';
-        
-        if (file_exists($file)) {
-            echo file_get_contents($file);
-        } else {
-            echo json_encode(['success' => false, 'error' => 'Not found']);
-        }
+        if (file_exists($file)) echo file_get_contents($file);
+        else echo json_encode(['success' => false, 'error' => 'Not found']);
         exit;
     }
 
     else if ($action === 'delete_client_settings') {
         $client_ip = $_SERVER['REMOTE_ADDR'];
         $file = HIFI_CACHE_DIR . '/client_' . md5($client_ip) . '.json';
-        
-        if (file_exists($file)) {
-            @unlink($file);
-        }
-        echo json_encode(['success' => true]);
-        exit;
+        if (file_exists($file)) @unlink($file);
+        echo json_encode(['success' => true]); exit;
     }
 
     // --- STATUS PRINCIPALE NOW PLAYING ---
@@ -346,9 +205,7 @@ try {
             if ($lines) {
                 foreach($lines as $line) {
                     $parts = explode('=', $line, 2);
-                    if(count($parts) === 2) {
-                        $moode_meta[trim($parts[0])] = trim($parts[1]);
-                    }
+                    if(count($parts) === 2) $moode_meta[trim($parts[0])] = trim($parts[1]);
                 }
             }
         }
@@ -372,9 +229,128 @@ try {
         $file = $song['file'] ?? '';
         $title_tag = $song['title'] ?? '';
         $station_tag = $song['name'] ?? '';
+        $final_title = $title_tag;
+        $final_artist = $song['artist'] ?? '';
+
+        $moode_file = $moode_meta['file'] ?? '';
+        $moode_player = $moode_meta['player'] ?? 'mpd';
+
+        $active_source = 'MPD';
+        $upper_player = strtoupper($moode_player);
+        
+        $source_map = [
+            'BLUEZ' => 'BLUETOOTH',
+            'LIBRESPOT' => 'SPOTIFY',
+            'SHAIRPORT-SYNC' => 'AIRPLAY',
+            'SQM' => 'SQUEEZELITE',
+            'ROON' => 'ROON'
+        ];
+        
+        if (isset($source_map[$upper_player])) {
+            $active_source = $source_map[$upper_player];
+        } elseif ($upper_player !== 'MPD') {
+            $active_source = $upper_player;
+        }
+
+        $is_hw_playing = false;
+        $hw_files = glob('/proc/asound/card*/pcm*p/sub0/hw_params');
+        if (is_array($hw_files)) {
+            foreach ($hw_files as $file_hw) {
+                $content = @file_get_contents($file_hw);
+                if ($content && strpos($content, 'format:') !== false && strpos($content, 'closed') === false) {
+                    $is_hw_playing = true;
+                    break;
+                }
+            }
+        }
+
+        $current_state = $status['state'] ?? 'stop';
+
+        // --- RILEVAMENTO REALE DELLA CONNESSIONE BLUETOOTH (ZERO LAG) ---
+        $is_bt_connected = false;
+        
+        // Metodo 1: Interroga il demone Bluetooth nativo tramite bluetoothctl
+        $bt_devices = @shell_exec('sudo bluetoothctl devices Connected 2>/dev/null');
+        if (!empty($bt_devices) && stripos($bt_devices, 'Device') !== false) {
+            $is_bt_connected = true;
+        }
+        
+        // Metodo 2: Fallback di sicurezza con hcitool
+        if (!$is_bt_connected) {
+            $hci_out = @shell_exec('hcitool con 2>/dev/null');
+            if (!empty($hci_out) && stripos($hci_out, 'handle') !== false) {
+                $is_bt_connected = true;
+            }
+        }
+
+        // --- LOGICA ANTI SPIN-DOWN E RICONOSCIMENTO SORGENTI ESTERNE ---
+        if ($is_hw_playing) {
+            // CASO 1: L'hardware sta emettendo suono
+            if ($current_state !== 'play') {
+                // MPD è in Stop/Pausa, quindi la musica arriva da una sorgente esterna
+                $current_state = 'play';
+                
+                if ($active_source === 'MPD') {
+                    if ($is_bt_connected) {
+                        $active_source = 'BLUETOOTH';
+                    } else {
+                        // Cerca altri demoni (Spotify, Airplay) solo se l'audio sta suonando
+                        $ps_list = @shell_exec('pgrep -l -i "librespot|spotify|shairport|squeezelite|sqm|roon|raat"');
+                        if (stripos($ps_list, 'librespot') !== false || stripos($ps_list, 'spotify') !== false) {
+                            $active_source = 'SPOTIFY';
+                        } elseif (stripos($ps_list, 'shairport') !== false) {
+                            $active_source = 'AIRPLAY';
+                        } elseif (stripos($ps_list, 'squeezelite') !== false || stripos($ps_list, 'sqm') !== false) {
+                            $active_source = 'SQUEEZELITE';
+                        } elseif (stripos($ps_list, 'raat') !== false || stripos($ps_list, 'roon') !== false) {
+                            $active_source = 'ROON';
+                        }
+                    }
+                }
+                
+                $final_title = $moode_meta['title'] ?? '';
+                $final_artist = $moode_meta['artist'] ?? $active_source;
+                
+                // Fallback estremo per tentare di estrarre i metadati Bluetooth forzatamente dal sistema
+                if ($active_source === 'BLUETOOTH' && empty(trim($final_title))) {
+                    $bt_meta = @shell_exec('playerctl -p bluez metadata --format "{{title}}|||{{artist}}" 2>/dev/null');
+                    if (!empty(trim($bt_meta))) {
+                        $meta_parts = explode('|||', trim($bt_meta));
+                        if (!empty(trim($meta_parts[0]))) {
+                            $final_title = trim($meta_parts[0]);
+                            $final_artist = trim($meta_parts[1] ?? 'Bluetooth');
+                        }
+                    }
+                }
+                
+                $file = strtolower($active_source) . '://stream';
+
+            } else {
+                // MPD sta suonando nativamente (Libreria, Web Radio, ecc.)
+                $active_source = 'MPD';
+                if (empty($final_title)) $final_title = $moode_meta['title'] ?? '';
+                if (empty($final_artist)) $final_artist = $moode_meta['artist'] ?? '';
+                if (empty($file)) $file = !empty($moode_file) ? $moode_file : '';
+            }
+        } else {
+            // CASO 2: L'hardware è silenzioso (Silenzio o Stop)
+            if ($is_bt_connected) {
+                // Il telefono è fisicamente connesso, ma la musica è in pausa. (Mantiene il logo!)
+                $current_state = 'stop'; // <-- VU Meter fermi
+                $active_source = 'BLUETOOTH';
+                $final_title = ''; 
+                $final_artist = 'Dispositivo Connesso';
+                $file = 'bluetooth://stream';
+            } else {
+                // Nessuna connessione attiva. Ripristina lo stato nativo di MPD.
+                $active_source = 'MPD';
+                if (empty($final_title)) $final_title = $moode_meta['title'] ?? '';
+                if (empty($final_artist)) $final_artist = $moode_meta['artist'] ?? '';
+                if (empty($file)) $file = !empty($moode_file) ? $moode_file : '';
+            }
+        }
 
         $file_upper = strtoupper($file);
-
         $is_webradio = (
             strpos($file, 'http://') === 0 || 
             strpos($file, 'https://') === 0 || 
@@ -385,15 +361,12 @@ try {
             substr($file_upper, -5) === '.M3U8'
         );
 
-        $final_title = $title_tag;
-        $final_artist = $song['artist'] ?? '';
-
+        $is_bluetooth = ($active_source === 'BLUETOOTH' || stripos($file_upper, 'BLUETOOTH') !== false);
         $coverUrl = $file ? get_cached_cover_url($file) : '';
 
-        // Routine dedicata alle Web Radio (PyScript + DB Fallback)
-        if ($is_webradio) {
+        // Routine dedicata alle Web Radio
+        if ($is_webradio && !$is_bluetooth) {
             $found_cover = false;
-            
             if (!empty($title_tag) || !empty($station_tag)) {
                 $current_track_hash = md5($station_tag . '_' . $title_tag);
                 $python_cache_file = HIFI_CACHE_DIR . '/py_' . $current_track_hash . '.txt';
@@ -401,14 +374,12 @@ try {
                 if (file_exists($python_cache_file)) {
                     $cached_url = trim(@file_get_contents($python_cache_file));
                     if (!empty($cached_url) && strpos($cached_url, 'http') === 0) {
-                        $coverUrl = $cached_url;
-                        $found_cover = true;
+                        $coverUrl = $cached_url; $found_cover = true;
                     }
                 } else {
                     $cmd_title = escapeshellarg($title_tag ?: 'Unknown');
                     $cmd_station = escapeshellarg($station_tag ?: 'Unknown');
                     $py_script_path = '/var/www/util/radiocover_plus.py';
-                    
                     if (file_exists($py_script_path)) {
                         @file_put_contents($python_cache_file, 'LOADING');
                         $bg_cmd = "/usr/bin/python3 $py_script_path --title $cmd_title --station $cmd_station > " . escapeshellarg($python_cache_file) . " 2>/dev/null &";
@@ -416,7 +387,6 @@ try {
                     }
                 }
             }
-
             if (!$found_cover && !empty($file)) {
                 $db = get_moode_db();
                 if ($db) {
@@ -425,75 +395,46 @@ try {
                     $res = $stmt->execute();
                     if ($row = $res->fetchArray(SQLITE3_ASSOC)) {
                         $db_name = $row['name'];
-                        $logo_paths = [
-                            '/var/local/www/imagesw/radio-logos/thumbs/' . $db_name . '.jpg',
-                            '/var/local/www/imagesw/radio-logos/' . $db_name . '.jpg',
-                            '/var/local/www/imagesw/rb-logos/thumbs/' . $db_name . '.jpg',
-                            '/var/local/www/imagesw/rb-logos/' . $db_name . '.jpg',
-                            '/var/local/www/imagesw/rb-logos/' . $db_name . '.png'
-                        ];
+                        $logo_paths = [ '/var/local/www/imagesw/radio-logos/thumbs/' . $db_name . '.jpg', '/var/local/www/imagesw/radio-logos/' . $db_name . '.jpg', '/var/local/www/imagesw/rb-logos/thumbs/' . $db_name . '.jpg', '/var/local/www/imagesw/rb-logos/' . $db_name . '.jpg', '/var/local/www/imagesw/rb-logos/' . $db_name . '.png' ];
                         foreach ($logo_paths as $p) {
                             if (@file_exists($p)) {
                                 $coverUrl = str_replace('/var/local/www', '', $p);
-                                $parts = explode('/', $coverUrl);
-                                $parts[count($parts)-1] = rawurlencode($parts[count($parts)-1]);
-                                $coverUrl = implode('/', $parts);
-                                $found_cover = true;
-                                break;
+                                $parts = explode('/', $coverUrl); $parts[count($parts)-1] = rawurlencode($parts[count($parts)-1]);
+                                $coverUrl = implode('/', $parts); $found_cover = true; break;
                             }
                         }
                     }
                     $db->close();
                 }
             }
-
             if (!$found_cover) {
                 $recent_file = '/var/local/www/rb-cache/recently_played.json';
                 $logo_name = '';
-                
                 if (file_exists($recent_file)) {
                     $radios = json_decode(@file_get_contents($recent_file), true);
                     if (is_array($radios)) {
                         foreach ($radios as $radio) {
                             if (!empty($radio['url']) && (strpos($file, $radio['url']) !== false || strpos($radio['url'], $file) !== false)) {
-                                if (!empty($radio['favicon'])) {
-                                    $coverUrl = $radio['favicon'];
-                                    $found_cover = true;
-                                }
-                                $logo_name = $radio['name'];
-                                break;
+                                if (!empty($radio['favicon'])) { $coverUrl = $radio['favicon']; $found_cover = true; }
+                                $logo_name = $radio['name']; break;
                             }
                         }
                     }
                 }
-
                 if (!$found_cover && !empty($logo_name)) {
-                    $paths = [
-                        '/var/local/www/imagesw/rb-logos/thumbs/' . $logo_name . '.jpg',
-                        '/var/local/www/imagesw/rb-logos/' . $logo_name . '.jpg'
-                    ];
+                    $paths = [ '/var/local/www/imagesw/rb-logos/thumbs/' . $logo_name . '.jpg', '/var/local/www/imagesw/rb-logos/' . $logo_name . '.jpg' ];
                     foreach ($paths as $p) {
                         if (@file_exists($p)) {
                             $coverUrl = str_replace('/var/local/www', '', $p);
-                            $parts = explode('/', $coverUrl);
-                            $parts[count($parts)-1] = rawurlencode($parts[count($parts)-1]);
-                            $coverUrl = implode('/', $parts);
-                            $found_cover = true;
-                            break;
+                            $parts = explode('/', $coverUrl); $parts[count($parts)-1] = rawurlencode($parts[count($parts)-1]);
+                            $coverUrl = implode('/', $parts); $found_cover = true; break;
                         }
                     }
                 }
             }
-
             if (!$found_cover && !empty($station_tag)) {
                 $search_name = strtolower(trim($station_tag));
-                $thumb_dirs = [
-                    '/var/local/www/imagesw/rb-logos/thumbs/',
-                    '/var/local/www/imagesw/rb-logos/',
-                    '/var/local/www/imagesw/radio-logos/thumbs/',
-                    '/var/local/www/imagesw/radio-logos/'
-                ];
-                
+                $thumb_dirs = [ '/var/local/www/imagesw/rb-logos/thumbs/', '/var/local/www/imagesw/rb-logos/', '/var/local/www/imagesw/radio-logos/thumbs/', '/var/local/www/imagesw/radio-logos/' ];
                 foreach ($thumb_dirs as $dir) {
                     if ($found_cover) break;
                     if (is_dir($dir)) {
@@ -503,9 +444,7 @@ try {
                                 $f_clean = strtolower(pathinfo($f, PATHINFO_FILENAME));
                                 if (strpos($search_name, $f_clean) !== false || strpos($f_clean, $search_name) !== false) {
                                     $rel_dir = str_replace('/var/local/www', '', $dir);
-                                    $coverUrl = $rel_dir . rawurlencode($f);
-                                    $found_cover = true;
-                                    break;
+                                    $coverUrl = $rel_dir . rawurlencode($f); $found_cover = true; break;
                                 }
                             }
                         }
@@ -515,19 +454,14 @@ try {
             if (!$found_cover) { $coverUrl = ''; }
         }
 
-        $is_bluetooth = (stripos($file, 'bluetooth') !== false || stripos($song['title'] ?? '', 'bluetooth') !== false);
-        
         $dac_format = '';
         $dac_rate = '';
-        $hw_files = glob('/proc/asound/card*/pcm0p/sub0/hw_params');
         if (is_array($hw_files)) {
             foreach ($hw_files as $file_hw) {
                 $content = @file_get_contents($file_hw);
                 if ($content && preg_match('/^format:\s*(\w+)/m', $content, $m)) {
                     $dac_format = $m[1];
-                    if (preg_match('/^rate:\s*(\d+)/m', $content, $m_rate)) {
-                        $dac_rate = $m_rate[1];
-                    }
+                    if (preg_match('/^rate:\s*(\d+)/m', $content, $m_rate)) $dac_rate = $m_rate[1];
                     break;
                 }
             }
@@ -542,7 +476,8 @@ try {
         }
 
         $response = [
-            'state' => $status['state'] ?? 'stop',
+            'state' => $current_state,
+            'active_source' => $active_source,
             'volume' => isset($status['volume']) ? (int)$status['volume'] : 0,
             'elapsed' => isset($status['elapsed']) ? (float)$status['elapsed'] : 0,
             'duration' => isset($status['duration']) ? (float)$status['duration'] : (isset($song['duration']) ? (float)$song['duration'] : 0),
@@ -567,45 +502,29 @@ try {
     else if ($action === 'radios') {
         $radios = [];
         $folders = ['RADIO', 'WEBRADIO'];
-
         foreach ($folders as $folder) {
             $ls_raw = send_mpd_command($socket, 'lsinfo "' . $folder . '"');
             $current_item = [];
-
             foreach (explode("\n", $ls_raw) as $line) {
                 if (strpos($line, ': ') !== false) {
                     $parts = explode(': ', $line, 2);
                     if (count($parts) === 2) {
                         $k = strtolower(trim($parts[0]));
                         $v = trim($parts[1]);
-
                         if ($k === 'file' || $k === 'playlist') {
-                            if (!empty($current_item)) {
-                                $radios[] = $current_item;
-                            }
+                            if (!empty($current_item)) $radios[] = $current_item;
                             $cover = get_cached_cover_url($v);
-                            $current_item = [
-                                'type' => 'radio',
-                                'file' => $v,
-                                'name' => basename($v),
-                                'coverUrl' => $cover,
-                                'genre' => 'Cartella ' . $folder,
-                                'country' => ''
-                            ];
+                            $current_item = [ 'type' => 'radio', 'file' => $v, 'name' => basename($v), 'coverUrl' => $cover, 'genre' => 'Cartella ' . $folder, 'country' => '' ];
                         } else if ($k === 'title' && !empty($current_item)) {
                             $current_item['name'] = $v;
                         }
                     }
                 }
             }
-            if (!empty($current_item)) {
-                $radios[] = $current_item;
-            }
+            if (!empty($current_item)) $radios[] = $current_item;
         }
-
         echo json_encode($radios);
     }
-
     else if ($action === 'radio_recent') {
         $recent_file = '/var/local/www/rb-cache/recently_played.json';
         if (file_exists($recent_file)) {
@@ -614,40 +533,26 @@ try {
             $results = [];
             if (is_array($radios)) {
                 foreach ($radios as $radio) {
-                    $results[] = [
-                        'type' => 'radio_browser',
-                        'name' => $radio['name'] ?? 'Sconosciuta',
-                        'file' => $radio['url'] ?? '',
-                        'coverUrl' => !empty($radio['favicon']) ? $radio['favicon'] : '/imagesw/rb-logos/thumbs/' . rawurlencode($radio['name']) . '.jpg',
-                        'genre' => $radio['tags'] ?? '',
-                        'country' => $radio['country'] ?? ''
-                    ];
+                    $results[] = [ 'type' => 'radio_browser', 'name' => $radio['name'] ?? 'Sconosciuta', 'file' => $radio['url'] ?? '', 'coverUrl' => !empty($radio['favicon']) ? $radio['favicon'] : '/imagesw/rb-logos/thumbs/' . rawurlencode($radio['name']) . '.jpg', 'genre' => $radio['tags'] ?? '', 'country' => $radio['country'] ?? '' ];
                 }
             }
             echo json_encode($results);
-        } else {
-            echo json_encode([]);
-        }
+        } else { echo json_encode([]); }
     }
-
     else if ($action === 'queue') {
         $playlist_raw = send_mpd_command($socket, 'playlistinfo');
         $status_raw = send_mpd_command($socket, 'status');
-
         $status = [];
         foreach (explode("\n", $status_raw) as $line) {
             if (strpos($line, 'songid:') === 0) $status['songid'] = trim(substr($line, 7));
         }
         $current_songid = $status['songid'] ?? -1;
-
-        $queue = [];
-        $current_song = [];
+        $queue = []; $current_song = [];
         foreach (explode("\n", $playlist_raw) as $line) {
             if (strpos($line, ':') !== false) {
                 $parts = explode(':', $line, 2);
                 if (count($parts) === 2) {
-                    $k = strtolower(trim($parts[0]));
-                    $v = trim($parts[1]);
+                    $k = strtolower(trim($parts[0])); $v = trim($parts[1]);
                     if ($k === 'file') {
                         if (!empty($current_song)) $queue[] = $current_song;
                         $current_song = ['file' => $v, 'title' => basename($v), 'artist' => '', 'duration' => 0, 'id' => '0', 'current' => false];
@@ -663,106 +568,72 @@ try {
         foreach ($queue as &$item) { $item['current'] = ($item['id'] === $current_songid); }
         echo json_encode($queue);
     }
-    
     else if ($action === 'playlists') {
-        $raw = send_mpd_command($socket, 'listplaylists');
-        $res = [];
-        foreach (explode("\n", $raw) as $line) {
-            if (strpos($line, 'playlist: ') === 0) $res[] = trim(substr($line, 10));
-        }
+        $raw = send_mpd_command($socket, 'listplaylists'); $res = [];
+        foreach (explode("\n", $raw) as $line) { if (strpos($line, 'playlist: ') === 0) $res[] = trim(substr($line, 10)); }
         echo json_encode($res);
     }
-
     else if ($action === 'browse') {
         $uri = $_GET['uri'] ?? '';
         $mpd_cmd = $uri ? 'lsinfo "' . str_replace('"', '\"', $uri) . '"' : 'lsinfo';
         $ls_raw = send_mpd_command($socket, $mpd_cmd);
-        $res = [];
-        $current_item = [];
-
+        $res = []; $current_item = [];
         foreach (explode("\n", $ls_raw) as $line) {
             if (strpos($line, ': ') !== false) {
                 $parts = explode(': ', $line, 2);
                 if (count($parts) === 2) {
-                    $k = strtolower(trim($parts[0]));
-                    $v = trim($parts[1]);
-
+                    $k = strtolower(trim($parts[0])); $v = trim($parts[1]);
                     if ($k === 'directory' || $k === 'file' || $k === 'playlist') {
                         if (!empty($current_item)) $res[] = $current_item;
-                        $type = $k;
-                        $cover = '';
-                        if ($k === 'file' || $k === 'playlist') {
-                            $cover = get_cached_cover_url($v);
-                        }
-                        $current_item = ['type' => $type, 'path' => $v, 'name' => basename($v), 'coverUrl' => $cover];
-                    } else if ($k === 'title' && !empty($current_item)) {
-                        $current_item['title'] = $v;
-                    }
+                        $cover = ($k === 'file' || $k === 'playlist') ? get_cached_cover_url($v) : '';
+                        $current_item = ['type' => $k, 'path' => $v, 'name' => basename($v), 'coverUrl' => $cover];
+                    } else if ($k === 'title' && !empty($current_item)) { $current_item['title'] = $v; }
                 }
             }
         }
         if (!empty($current_item)) $res[] = $current_item;
         echo json_encode($res);
     }
-
     else if ($action === 'folder_cover') {
         $folder = str_replace('"', '\"', $_GET['folder'] ?? '');
         $coverUrl = get_cached_cover_url($folder . '/dummy.ext');
-        if (strpos($coverUrl, 'dummy.ext') !== false) {
-            $coverUrl = '';
-        }
+        if (strpos($coverUrl, 'dummy.ext') !== false) $coverUrl = '';
         echo json_encode(['coverUrl' => $coverUrl]);
     }
-
     else if ($action === 'artists') {
         $items = get_cached_data('all_artists', 86400, function() use ($socket) {
-            $raw = send_mpd_command($socket, 'list artist');
-            $res = [];
-            foreach (explode("\n", $raw) as $line) {
-                if (strpos($line, 'Artist: ') === 0) $res[] = trim(substr($line, 8));
-            }
+            $raw = send_mpd_command($socket, 'list artist'); $res = [];
+            foreach (explode("\n", $raw) as $line) { if (strpos($line, 'Artist: ') === 0) $res[] = trim(substr($line, 8)); }
             return array_values(array_filter($res));
         });
         echo json_encode($items);
     }
-    
     else if ($action === 'artist_albums') {
         $artist = str_replace('"', '\"', $_GET['artist'] ?? '');
         $items = get_cached_data('albums_of_' . md5($artist), 86400, function() use ($socket, $artist) {
-            $raw = send_mpd_command($socket, 'list album artist "' . $artist . '"');
-            $res = [];
-            foreach (explode("\n", $raw) as $line) {
-                if (strpos($line, 'Album: ') === 0) $res[] = trim(substr($line, 7));
-            }
+            $raw = send_mpd_command($socket, 'list album artist "' . $artist . '"'); $res = [];
+            foreach (explode("\n", $raw) as $line) { if (strpos($line, 'Album: ') === 0) $res[] = trim(substr($line, 7)); }
             return array_values(array_filter($res));
         });
         echo json_encode($items);
     }
-    
     else if ($action === 'albums') {
         $items = get_cached_data('all_albums', 86400, function() use ($socket) {
-            $raw = send_mpd_command($socket, 'list album');
-            $res = [];
-            foreach (explode("\n", $raw) as $line) {
-                if (strpos($line, 'Album: ') === 0) $res[] = trim(substr($line, 7));
-            }
+            $raw = send_mpd_command($socket, 'list album'); $res = [];
+            foreach (explode("\n", $raw) as $line) { if (strpos($line, 'Album: ') === 0) $res[] = trim(substr($line, 7)); }
             return array_values(array_filter($res));
         });
         echo json_encode($items);
     }
-    
     else if ($action === 'album_tracks') {
         $album = str_replace('"', '\"', $_GET['album'] ?? '');
         $results = get_cached_data('tracks_of_' . md5($album), 86400, function() use ($socket, $album) {
-            $raw = send_mpd_command($socket, 'find album "' . $album . '"');
-            $res = [];
-            $current = [];
+            $raw = send_mpd_command($socket, 'find album "' . $album . '"'); $res = []; $current = [];
             foreach (explode("\n", $raw) as $line) {
                 if (strpos($line, ':') !== false) {
                     $parts = explode(':', $line, 2);
                     if (count($parts) === 2) {
-                        $k = strtolower(trim($parts[0]));
-                        $v = trim($parts[1]);
+                        $k = strtolower(trim($parts[0])); $v = trim($parts[1]);
                         if ($k === 'file') {
                             if (!empty($current)) $res[] = $current;
                             $coverUrl = get_cached_cover_url($v);
@@ -779,134 +650,56 @@ try {
         });
         echo json_encode($results);
     }
-    
     else if ($action === 'album_cover' || $action === 'artist_cover') {
         $type = $action === 'album_cover' ? 'album' : 'artist';
         $val = str_replace('"', '\"', $_GET[$type] ?? '');
-
         $cover_data = get_cached_data("cover_path_{$type}_" . md5($val), 86400, function() use ($socket, $type, $val) {
-            $raw = send_mpd_command($socket, "find $type \"$val\"");
-            $coverUrl = '';
+            $raw = send_mpd_command($socket, "find $type \"$val\""); $coverUrl = '';
             foreach (explode("\n", $raw) as $line) {
-                if (stripos($line, 'file: ') === 0) {
-                    $v = trim(substr($line, 6));
-                    $coverUrl = get_cached_cover_url($v);
-                    break;
-                }
+                if (stripos($line, 'file: ') === 0) { $coverUrl = get_cached_cover_url(trim(substr($line, 6))); break; }
             }
             return ['coverUrl' => $coverUrl];
         });
         echo json_encode($cover_data);
     }
-
-    // --- MOTORE DI RICERCA ---
     else if ($action === 'search') {
-        $raw_query = trim($_GET['q'] ?? '');
-        $lang = $_GET['lang'] ?? 'it';
-        $search_term = strtolower($raw_query);
-        
+        $raw_query = trim($_GET['q'] ?? ''); $lang = $_GET['lang'] ?? 'it'; $search_term = strtolower($raw_query);
         $detected_type = 'any';
-        $intents = [
-            'album'    => ['album '],
-            'artist'   => ['artista ', 'cantante ', 'gruppo '],
-            'title'    => ['brano ', 'canzone ', 'traccia '],
-            'playlist' => ['playlist '],
-            'genre'    => ['genere ', 'tipo ']
-        ];
-
+        $intents = [ 'album' => ['album '], 'artist' => ['artista ', 'cantante ', 'gruppo '], 'title' => ['brano ', 'canzone ', 'traccia '], 'playlist' => ['playlist '], 'genre' => ['genere ', 'tipo '] ];
         foreach ($intents as $type => $keywords) {
             foreach ($keywords as $kw) {
-                if (strpos($search_term, $kw) !== false) {
-                    $detected_type = $type;
-                    $search_term = str_replace($kw, '', $search_term);
-                    break 2;
-                }
+                if (strpos($search_term, $kw) !== false) { $detected_type = $type; $search_term = str_replace($kw, '', $search_term); break 2; }
             }
         }
-
-        $stop_words_library = [
-            'it' => ['metti', 'riproduci', 'suona', 'ascolta', 'il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una', 'di', 'del', 'della', 'per', 'favore']
-        ];
-        $stop_words = $stop_words_library[$lang] ?? $stop_words_library['it'];
-
-        $words = explode(' ', $search_term);
-        $clean_words = array_filter($words, function($w) use ($stop_words) {
-            return !in_array($w, $stop_words) && strlen($w) > 1;
-        });
-
+        $stop_words = ['metti', 'riproduci', 'suona', 'ascolta', 'il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una', 'di', 'del', 'della', 'per', 'favore'];
+        $clean_words = array_filter(explode(' ', $search_term), function($w) use ($stop_words) { return !in_array($w, $stop_words) && strlen($w) > 1; });
         $final_query = empty($clean_words) ? trim($search_term) : implode(' ', $clean_words);
-        
-        $aliases = ["dark side" => "The Dark Side of the Moon", "the wall" => "The Wall"];
-        if (isset($aliases[$final_query])) {
-            $final_query = $aliases[$final_query];
-            if ($detected_type === 'any') $detected_type = 'album'; 
-        }
-
         $safe_q = str_replace('"', '\"', $final_query);
         $search_type = $_GET['type'] ?? $detected_type;
-        
         $mpd_search_type = in_array($search_type, ['album', 'artist', 'title']) ? $search_type : 'any';
-
         $raw = send_mpd_command($socket, "search $mpd_search_type \"$safe_q\"");
-        
-        $results = [];
-        $current = [];
-        $seen_albums = [];
-        $seen_artists = [];
+        $results = []; $current = []; $seen_albums = []; $seen_artists = [];
         
         $process_item = function($item) use (&$results, &$seen_albums, &$seen_artists, $search_type, $final_query) {
             if (empty($item['file'])) return;
-            $coverUrl = get_cached_cover_url($item['file']);
-
             if ($search_type === 'album') {
                 if (!empty($item['album']) && stripos($item['album'], $final_query) !== false) {
                     $artist_tag = $item['albumartist'] ?? $item['artist'] ?? '';
                     $alb_key = md5(strtolower(trim($item['album'])) . '_' . strtolower(trim($artist_tag)));
-                    
-                    if (!isset($seen_albums[$alb_key])) {
-                        $seen_albums[$alb_key] = true;
-                        $results[] = [
-                            'type' => 'album', 
-                            'name' => $item['album'], 
-                            'artist' => $artist_tag, 
-                            'coverUrl' => $coverUrl
-                        ];
-                    }
+                    if (!isset($seen_albums[$alb_key])) { $seen_albums[$alb_key] = true; $results[] = ['type' => 'album', 'name' => $item['album'], 'artist' => $artist_tag, 'coverUrl' => get_cached_cover_url($item['file'])]; }
                 }
             } else if ($search_type === 'artist') {
                 if (!empty($item['artist']) && stripos($item['artist'], $final_query) !== false) {
                     $art_key = strtolower(trim($item['artist']));
-                    if (!isset($seen_artists[$art_key])) {
-                        $seen_artists[$art_key] = true;
-                        $results[] = ['type' => 'artist', 'name' => $item['artist'], 'coverUrl' => $coverUrl];
-                    }
+                    if (!isset($seen_artists[$art_key])) { $seen_artists[$art_key] = true; $results[] = ['type' => 'artist', 'name' => $item['artist'], 'coverUrl' => get_cached_cover_url($item['file'])]; }
                 }
             } else {
                 $match = false;
-                
-                if ($search_type === 'any' || $search_type === 'radio') {
-                    $match = true;
-                }
-                else if ($search_type === 'title' && stripos($item['title'] ?? '', $final_query) !== false) {
-                    $match = true;
-                }
-                else if ($search_type === 'genre' && stripos($item['genre'] ?? '', $final_query) !== false) {
-                    $match = true;
-                }
-                else if ($search_type === 'file' && stripos($item['file'] ?? '', $final_query) !== false) {
-                    $match = true;
-                }
-
-                if ($match) {
-                    $results[] = [
-                        'type' => 'file', 
-                        'file' => $item['file'], 
-                        'title' => $item['title'] ?? basename($item['file']), 
-                        'artist' => $item['artist'] ?? '', 
-                        'album' => $item['album'] ?? '', 
-                        'coverUrl' => $coverUrl
-                    ];
-                }
+                if ($search_type === 'any' || $search_type === 'radio') $match = true;
+                else if ($search_type === 'title' && stripos($item['title'] ?? '', $final_query) !== false) $match = true;
+                else if ($search_type === 'genre' && stripos($item['genre'] ?? '', $final_query) !== false) $match = true;
+                else if ($search_type === 'file' && stripos($item['file'] ?? '', $final_query) !== false) $match = true;
+                if ($match) { $results[] = ['type' => 'file', 'file' => $item['file'], 'title' => $item['title'] ?? basename($item['file']), 'artist' => $item['artist'] ?? '', 'album' => $item['album'] ?? '', 'coverUrl' => get_cached_cover_url($item['file'])]; }
             }
         };
 
@@ -914,15 +707,11 @@ try {
             if (strpos($line, ':') !== false) {
                 $parts = explode(':', $line, 2);
                 if (count($parts) === 2) {
-                    $k = strtolower(trim($parts[0]));
-                    $v = trim($parts[1]);
-
+                    $k = strtolower(trim($parts[0])); $v = trim($parts[1]);
                     if ($k === 'file') {
                         if (!empty($current)) $process_item($current);
                         $current = ['file' => $v, 'title' => '', 'artist' => '', 'album' => '', 'albumartist' => '', 'genre' => ''];
-                    } else if (in_array($k, ['title', 'artist', 'album', 'albumartist', 'genre'])) {
-                        $current[$k] = $v;
-                    }
+                    } else if (in_array($k, ['title', 'artist', 'album', 'albumartist', 'genre'])) { $current[$k] = $v; }
                 }
             }
         }
@@ -932,30 +721,20 @@ try {
 
         if (isset($_GET['autoplay']) && $_GET['autoplay'] === 'true') {
             send_mpd_command($socket, 'clear'); 
-            
             if (!empty($final_results)) {
                 $best = $final_results[0];
-                
-                if ($search_type === 'playlist') {
-                    send_mpd_command($socket, 'load "' . str_replace('"', '\"', $safe_q) . '"');
-                } else if ($search_type === 'album') {
-                    send_mpd_command($socket, 'findadd album "' . str_replace('"', '\"', $best['name']) . '"');
-                } else if ($search_type === 'artist') {
-                    send_mpd_command($socket, 'findadd artist "' . str_replace('"', '\"', $best['name']) . '"');
-                } else {
-                    send_mpd_command($socket, 'searchadd ' . $mpd_search_type . ' "' . str_replace('"', '\"', $safe_q) . '"');
-                }
+                if ($search_type === 'playlist') send_mpd_command($socket, 'load "' . str_replace('"', '\"', $safe_q) . '"');
+                else if ($search_type === 'album') send_mpd_command($socket, 'findadd album "' . str_replace('"', '\"', $best['name']) . '"');
+                else if ($search_type === 'artist') send_mpd_command($socket, 'findadd artist "' . str_replace('"', '\"', $best['name']) . '"');
+                else send_mpd_command($socket, 'searchadd ' . $mpd_search_type . ' "' . str_replace('"', '\"', $safe_q) . '"');
             }
-            
             send_mpd_command($socket, 'play');
             echo json_encode(['success' => true, 'played' => ['intent' => $search_type, 'query' => $final_query]]);
             exit;
         }
-
         echo json_encode($final_results);
     }
 
-    // --- COMANDI DI RIPRODUZIONE ---
     else if ($action === 'command') { 
         $cmd = $_GET['cmd'] ?? '';
         $param = $_GET['param'] ?? '';
@@ -964,77 +743,50 @@ try {
         if ($cmd === 'toggle') {
             $status_raw = send_mpd_command($socket, 'status');
             $song_raw = send_mpd_command($socket, 'currentsong');
+            $state = ''; $file = '';
+            foreach (explode("\n", $status_raw) as $line) { if (strpos($line, 'state:') === 0) $state = trim(substr($line, 6)); }
+            foreach (explode("\n", $song_raw) as $line) { if (stripos($line, 'file:') === 0) $file = trim(substr($line, 6)); }
             
-            $state = '';
-            $file = '';
-            
-            foreach (explode("\n", $status_raw) as $line) {
-                if (strpos($line, 'state:') === 0) $state = trim(substr($line, 6));
-            }
-            foreach (explode("\n", $song_raw) as $line) {
-                if (stripos($line, 'file:') === 0) $file = trim(substr($line, 6));
-            }
-            
-            $is_webradio = (
-                stripos($file, 'http://') === 0 || 
-                stripos($file, 'https://') === 0 || 
-                stripos($file, 'RADIO/') === 0 || 
-                stripos($file, 'WEBRADIO/') === 0
-            );
-
-            if ($state === 'play') {
-                $mpd_cmd = $is_webradio ? 'stop' : 'pause 1';
-            } else {
-                $mpd_cmd = 'play';
-            }
+            $is_webradio = (stripos($file, 'http://') === 0 || stripos($file, 'https://') === 0 || stripos($file, 'RADIO/') === 0 || stripos($file, 'WEBRADIO/') === 0);
+            $mpd_cmd = ($state === 'play') ? ($is_webradio ? 'stop' : 'pause 1') : 'play';
         }
         else if ($cmd === 'play') $mpd_cmd = 'play';
         else if ($cmd === 'stop') $mpd_cmd = 'stop'; 
         else if ($cmd === 'pause') {
-            $song_raw = send_mpd_command($socket, 'currentsong');
-            $file = '';
-            foreach (explode("\n", $song_raw) as $line) {
-                if (stripos($line, 'file:') === 0) $file = trim(substr($line, 6));
-            }
-            $is_webradio = (
-                stripos($file, 'http://') === 0 || 
-                stripos($file, 'https://') === 0 || 
-                stripos($file, 'RADIO/') === 0 || 
-                stripos($file, 'WEBRADIO/') === 0
-            );
+            $song_raw = send_mpd_command($socket, 'currentsong'); $file = '';
+            foreach (explode("\n", $song_raw) as $line) { if (stripos($line, 'file:') === 0) $file = trim(substr($line, 6)); }
+            $is_webradio = (stripos($file, 'http://') === 0 || stripos($file, 'https://') === 0 || stripos($file, 'RADIO/') === 0 || stripos($file, 'WEBRADIO/') === 0);
             $mpd_cmd = $is_webradio ? 'stop' : 'pause 1';
         }
         else if ($cmd === 'next') $mpd_cmd = 'next';
         else if ($cmd === 'previous') $mpd_cmd = 'previous';
-        else if ($cmd === 'volume') $mpd_cmd = 'setvol ' . intval($param);
+        else if ($cmd === 'volume') {
+            $vol = intval($param);
+            $mpd_cmd = 'setvol ' . $vol;
+            $db = get_moode_db();
+            if ($db) {
+                @$db->exec("UPDATE cfg_system SET value='$vol' WHERE param='volknob'");
+                @$db->exec("UPDATE cfg_system SET value='0' WHERE param='volmute'");
+                $db->close();
+            }
+            exec('PATH=/usr/local/bin:/usr/bin:/bin /var/www/command/vol.sh ' . $vol . ' > /dev/null 2>&1 &');
+        }
         else if ($cmd === 'playid') $mpd_cmd = 'playid ' . intval($param);
         else if ($cmd === 'seek') $mpd_cmd = 'seekcur ' . intval($param);
         else if ($cmd === 'repeat') $mpd_cmd = 'repeat ' . intval($param);
         else if ($cmd === 'random') $mpd_cmd = 'random ' . intval($param);
         else if ($cmd === 'clear') $mpd_cmd = 'clear';
-        else if ($cmd === 'save_playlist') {
-            $safe_param = str_replace('"', '\"', $param);
-            $mpd_cmd = 'save "' . $safe_param . '"';
-        }
+        else if ($cmd === 'save_playlist') { $mpd_cmd = 'save "' . str_replace('"', '\"', $param) . '"'; }
         else if ($cmd === 'load_playlist') {
             $safe_param = str_replace('"', '\"', $param);
-            send_mpd_command($socket, 'clear');
-            send_mpd_command($socket, 'load "' . $safe_param . '"');
-            $mpd_cmd = 'play';
+            send_mpd_command($socket, 'clear'); send_mpd_command($socket, 'load "' . $safe_param . '"'); $mpd_cmd = 'play';
         }
-        else if ($cmd === 'delete_playlist') {
-            $safe_param = str_replace('"', '\"', $param);
-            $mpd_cmd = 'rm "' . $safe_param . '"';
-        }
+        else if ($cmd === 'delete_playlist') { $mpd_cmd = 'rm "' . str_replace('"', '\"', $param) . '"'; }
         else if ($cmd === 'addplay') {
-            $type = $_GET['type'] ?? 'file';
-            $mode = $_GET['mode'] ?? 'play';
+            $type = $_GET['type'] ?? 'file'; $mode = $_GET['mode'] ?? 'play';
             $safe_param = str_replace('"', '\"', $param);
-
             $ext = strtolower(pathinfo($param, PATHINFO_EXTENSION));
-            if (in_array($ext, ['pls', 'm3u', 'm3u8'])) {
-                $type = 'playlist';
-            }
+            if (in_array($ext, ['pls', 'm3u', 'm3u8'])) $type = 'playlist';
 
             if ($mode === 'play') send_mpd_command($socket, 'clear');
 
@@ -1044,9 +796,7 @@ try {
             else send_mpd_command($socket, 'add "' . $safe_param . '"');
 
             if ($mode === 'play') send_mpd_command($socket, 'play');
-
-            echo json_encode(['success' => true]);
-            exit;
+            echo json_encode(['success' => true]); exit;
         }
 
         if ($mpd_cmd) {
@@ -1057,64 +807,33 @@ try {
         }
     }
 
-    // --- UPLOAD COPERTINA MANUALE ---
     else if ($action === 'set_custom_cover') {
         $folder = $_POST['folder'] ?? '';
-        
         if (isset($_FILES['cover']) && !empty($folder)) {
-            $rel_dir = ltrim($folder, '/');
-            $hash = md5($rel_dir);
+            $rel_dir = ltrim($folder, '/'); $hash = md5($rel_dir);
             $dest = HIFI_CACHE_DIR . '/' . $hash . '.jpg';
-            
-            if (!is_dir(HIFI_CACHE_DIR)) {
-                @mkdir(HIFI_CACHE_DIR, 0775, true);
-            }
-
+            if (!is_dir(HIFI_CACHE_DIR)) @mkdir(HIFI_CACHE_DIR, 0775, true);
             if (move_uploaded_file($_FILES['cover']['tmp_name'], $dest)) {
-                echo json_encode(['success' => true, 'coverUrl' => 'cache/' . $hash . '.jpg']);
-                exit;
+                echo json_encode(['success' => true, 'coverUrl' => 'cache/' . $hash . '.jpg']); exit;
             }
         }
-        echo json_encode(['success' => false, 'error' => 'Upload fallito']);
-        exit;
+        echo json_encode(['success' => false, 'error' => 'Upload fallito']); exit;
     }
     
-    // --- SCRAPER COPERTINE WEB ---
     else if ($action === 'download_web_cover') {
-        $folder = isset($_GET['folder']) ? $_GET['folder'] : '';
-        $url = isset($_GET['url']) ? $_GET['url'] : '';
-        
-        if (empty($folder) || empty($url)) {
-            echo json_encode(['success' => false, 'error' => 'Parametri mancanti']);
-            exit;
-        }
-        
+        $folder = $_GET['folder'] ?? ''; $url = $_GET['url'] ?? '';
+        if (empty($folder) || empty($url)) { echo json_encode(['success' => false, 'error' => 'Parametri mancanti']); exit; }
         $cleanFolder = ltrim(str_replace('..', '', $folder), '/');
-        
         $abs_dir = '/mnt/' . $cleanFolder;
-        if (!is_dir($abs_dir)) {
-            $abs_dir = '/var/lib/mpd/music/' . $cleanFolder;
-        }
+        if (!is_dir($abs_dir)) $abs_dir = '/var/lib/mpd/music/' . $cleanFolder;
+        if (!is_dir($abs_dir)) { echo json_encode(['success' => false, 'error' => 'Cartella non trovata']); exit; }
         
-        if (!is_dir($abs_dir)) {
-             echo json_encode(['success' => false, 'error' => 'Cartella ' . $cleanFolder . ' non trovata sul server']);
-             exit;
-        }
-        
-        $options = [
-            "http" => [
-                "header" => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
-            ]
-        ];
+        $options = [ "http" => [ "header" => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n" ] ];
         $context = stream_context_create($options);
         $imageData = @file_get_contents($url, false, $context);
         
-        if (!$imageData) {
-            echo json_encode(['success' => false, 'error' => 'Il server Apple ha rifiutato il download dell\'immagine']);
-            exit;
-        }
+        if (!$imageData) { echo json_encode(['success' => false, 'error' => 'Download rifiutato']); exit; }
         
-        // Piano A: Salvataggio fisico nella cartella
         $coverFile = rtrim($abs_dir, '/') . '/folder.jpg';
         $result = @file_put_contents($coverFile, $imageData);
         
@@ -1123,31 +842,17 @@ try {
             exec("php /var/www/command/thumb-gen.php > /dev/null 2>&1 &");
             echo json_encode(['success' => true]);
         } else {
-            // Piano B: Fallback in Cache Locale
             $hash = md5($cleanFolder);
             $cache_dest = HIFI_CACHE_DIR . '/' . $hash . '.jpg';
-            
-            if (!is_dir(HIFI_CACHE_DIR)) {
-                @mkdir(HIFI_CACHE_DIR, 0775, true);
-            }
-            
+            if (!is_dir(HIFI_CACHE_DIR)) @mkdir(HIFI_CACHE_DIR, 0775, true);
             $cache_result = @file_put_contents($cache_dest, $imageData);
-            
-            if ($cache_result !== false) {
-                echo json_encode(['success' => true, 'note' => 'Salvata in cache locale']);
-            } else {
-                echo json_encode(['success' => false, 'error' => 'Permessi negati sia sul NAS che nella Cache locale.']);
-            }
+            if ($cache_result !== false) echo json_encode(['success' => true, 'note' => 'Salvata in cache locale']);
+            else echo json_encode(['success' => false, 'error' => 'Permessi negati.']);
         }
         exit;
     }
-} 
-
-catch (\Throwable $e) {
-    echo json_encode([
-        'success' => false, 
-        'error' => 'PHP Fatal Error: ' . $e->getMessage() . ' in ' . $e->getFile() . ' on line ' . $e->getLine()
-    ]);
+} catch (\Throwable $e) {
+    echo json_encode(['success' => false, 'error' => 'PHP Error']);
 }
 
 if ($socket) fclose($socket);

@@ -44,7 +44,7 @@
             <div class="meters-flex-container">
                 <div class="meters-wrapper">
                     <div class="ss-display-panel">
-                        <div class="ss-display-text" id="ssTrackInfo" data-i18n="msg_waiting">In attesa di connessione...</div>
+                        <div class="ss-display-text" id="ssTrackInfo" data-i18n="msg_waiting">Pronto all'ascolto</div>
                     </div>
                     <div class="ss-canvas-row">
                         <canvas id="vuLeft"></canvas>
@@ -183,7 +183,7 @@
 
                     <div class="info-and-controls">
                         <div class="track-info-group">
-                            <div class="text-title" id="mainTitle" data-i18n="msg_waiting">In attesa di connessione...</div>
+                            <div class="text-title" id="mainTitle" data-i18n="msg_waiting">Pronto all'ascolto</div>
                             <div class="text-artist" id="mainArtist">-</div>
                             <div class="text-album" id="infoAlbum">-</div>
                             
@@ -218,7 +218,7 @@
                                 <button class="sec-btn" id="btnMute" onclick="toggleMute()" data-i18n-title="tip_mute" title="Mute/Unmute"><i class="bi bi-volume-up-fill" id="muteIcon"></i></button>
                                 
                                 <!-- NUOVO CONTROLLO VOLUME A ROTELLA ORIZZONTALE -->
-                                <div class="player-vol-wheel-wrapper" title="Scorri per regolare">
+                                 <div class="player-vol-wheel-wrapper" data-i18n-title="tip_vol_wheel" title="Scorri per regolare">
                                     <div class="player-vol-wheel-recess" id="volWheelContainer">
                                         <div class="player-vol-wheel-surface" id="volWheelUI"></div>
                                     </div>
@@ -608,9 +608,6 @@
                     <label data-i18n="lbl_endpoint_search">Endpoint Ricerca Vocale e Play</label>
                     <input type="text" readonly value="/vumeter/mpd_bridge.php?action=search&type=any&q={TESTO}&lang={it|en}&autoplay=true" style="color:#aaa; background:rgba(0,0,0,0.8); cursor:text; font-family:monospace; font-size: 0.8rem;">
                     
-                    <label data-i18n="lbl_endpoint_camilla">Endpoint CamillaDSP ON/OFF</label>
-                    <input type="text" readonly value="/vumeter/mpd_bridge.php?action=sys_control&cmd=camilladsp_off" style="color:#aaa; background:rgba(0,0,0,0.8); cursor:text; font-family:monospace; font-size: 0.8rem;">
-                    
                     <label data-i18n="lbl_moode_url" style="margin-top: 1rem;">URL Interfaccia moOde Audio</label>
                     <input type="text" id="moodeUiUrlInput" data-i18n-placeholder="ph_moode_url" placeholder="es. http://192.168.1.50" onchange="saveSettings()">
                 </div>
@@ -755,3 +752,4 @@
 
 </body>
 </html>
+

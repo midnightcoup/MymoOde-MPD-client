@@ -473,29 +473,34 @@ function changeThemeOffset(offset) {
     if (typeof saveSettings === 'function') saveSettings();
 }
 
+// Cache delle referenze DOM (eseguita 1 sola volta all'avvio)
+const domVuStyle = document.getElementById('vuStyleSelect');
+const domInlineToggle = document.getElementById('inlineVuToggle');
+const domTabNowPlaying = document.getElementById('tab-nowplaying');
+
 /**
  * =========================================
  * MOTORE DI RENDER FISICO (RENDER LOOP)
  * =========================================
  */
 function renderLoop() {
-    let styleSelect = document.getElementById('vuStyleSelect');
-    let currentStyle = styleSelect ? styleSelect.value : 'blue_mod70';
-
-    let inl = document.getElementById('inlineVuToggle');
+    // Lettura istantanea delle proprietà: zero ricerche nel DOM
+    let currentStyle = domVuStyle ? domVuStyle.value : 'blue_mod70';
     let isInlineActive = false;
     
-    if (inl && inl.checked && !ssActive) { 
-        let activeTab = document.querySelector('.tab-pane.active');
-        if (activeTab && activeTab.id === 'tab-nowplaying') {
+    if (domInlineToggle && domInlineToggle.checked && !ssActive) { 
+        // Verifica super-veloce con classList.contains al posto del pesantissimo querySelector
+        if (domTabNowPlaying && domTabNowPlaying.classList.contains('active')) {
             isInlineActive = true;
         }
     }
 
     if (ssActive || isInlineActive) {
-        // Applica l'effetto inerzia e molla (spring) per simulare un vero ago analogico
-        const spring = 0.12; 
-        const friction = 0.82;
+        // Estrapola il preset della dinamica dal pannello admin (o usa l'elastico classico di default)
+        let dynParts = (globalCustomLabels['vu_dynamics'] || '0.15,0.88').split(',');
+        const spring = parseFloat(dynParts[0]); 
+        const friction = parseFloat(dynParts[1]);
+
         
         velL += (targetL - smoothedL) * spring; 
         velL *= friction; 
@@ -538,7 +543,7 @@ function initScreensaverAndVU() {
 function renderFaceToCtx(ctx, style, w, h, backlight) {
     let scaleRatio = w / 440;
     
-    // MODELLO: BLUE MONO 1000
+// MODELLO: BLUE MONO 1000
     if (style === 'blue_mono_mod1000') {
         let bgGrad = ctx.createRadialGradient(w/2, h*0.45, 10, w/2, h*0.5, h * 1.15); 
         bgGrad.addColorStop(0, backlight ? "#2fb2ff" : "#175980"); 
@@ -548,13 +553,13 @@ function renderFaceToCtx(ctx, style, w, h, backlight) {
         ctx.fillRect(0, 0, w, h);
         
         let cx = w / 2, cy = h * 1.62, radius = h * 1.32; 
-        ctx.strokeStyle = "#ffffff"; 
+        ctx.strokeStyle = "#111111"; 
         ctx.lineWidth = Math.max(1.5, w / 250); 
         ctx.beginPath(); 
         ctx.arc(cx, cy, radius, Math.PI * 1.28, Math.PI * 1.72, false); 
         ctx.stroke(); 
         ctx.lineWidth = 1; 
-        ctx.strokeStyle = "#ffffff";
+        ctx.strokeStyle = "#111111";
         
         for (let a = 1.28; a <= 1.72; a += 0.008) { 
             let isMajor = (Math.abs((a % 0.04)) < 0.002 || Math.abs((a % 0.04) - 0.04) < 0.002); 
@@ -569,7 +574,7 @@ function renderFaceToCtx(ctx, style, w, h, backlight) {
             ctx.stroke(); 
         }
         
-        ctx.fillStyle = "#ffffff"; 
+        ctx.fillStyle = "#111111"; 
         ctx.textAlign = "center"; 
         ctx.font = `bold ${Math.round(11 * scaleRatio)}px sans-serif`; 
         ctx.fillText("WATTS", cx, h * 0.70); 
@@ -1535,14 +1540,14 @@ function renderFaceToCtx(ctx, style, w, h, backlight) {
         ctx.fillRect(0, 0, w, h);
         
         let cx = w / 2, cy = h * 1.62, radius = h * 1.32; 
-        ctx.strokeStyle = "#ffffff"; 
+        ctx.strokeStyle = "#111111"; 
         ctx.lineWidth = Math.max(1.2, w / 300); 
         ctx.beginPath(); 
         ctx.arc(cx, cy, radius, Math.PI * 1.28, Math.PI * 1.72, false); 
         ctx.stroke(); 
         
         ctx.lineWidth = 1; 
-        ctx.strokeStyle = "#ffffff";
+        ctx.strokeStyle = "#111111";
         for (let a = 1.28; a <= 1.72; a += 0.008) { 
             let isMajor = (Math.abs((a % 0.04)) < 0.002 || Math.abs((a % 0.04) - 0.04) < 0.002); 
             let tickLen = isMajor ? (h * 0.04) : (h * 0.02); 
@@ -1556,7 +1561,7 @@ function renderFaceToCtx(ctx, style, w, h, backlight) {
             ctx.stroke(); 
         }
         
-        ctx.fillStyle = "#ffffff"; 
+        ctx.fillStyle = "#111111"; 
         ctx.textAlign = "center"; 
         ctx.font = `bold ${Math.round(10 * scaleRatio)}px sans-serif`; 
         ctx.fillText("WATTS", cx, h * 0.70); 
@@ -1641,7 +1646,6 @@ function drawFaceWithCache(ctx, style) {
     let tgl = document.getElementById('backlightToggle');
     let backlight = tgl ? tgl.checked : true;
     
-    loadCustomLabels(); 
     let customHash = JSON.stringify(globalCustomLabels);
     let cacheKey = style + "_" + backlight + "_" + w + "x" + h + "_" + customHash;
 
@@ -1723,8 +1727,9 @@ function drawNeedle(ctx, value, style) {
         if (angleVal > 1.70) angleVal = 1.70;
         if (style === 'flat_mod00') { angleVal = 1.42 + (value / 255) * 0.16; }
 
+        // Lancette nere di default (incluso il blue_mod70), chiare per gli sfondi scuri
         let needleColor = "#111111";
-        if (style === 'blue_mod70' || style === 'blue_mono_mod1000' || style === 'minimal_mod00' || style === 'dark_meter_mod88') needleColor = "#f5f5f5"; 
+        if (style === 'blue_mono_mod1000' || style === 'minimal_mod00' || style === 'dark_meter_mod88') needleColor = "#f5f5f5"; 
         if (style === 'neon_mod95') needleColor = "#ff3366"; 
         if (style === 'tube_mod50') needleColor = "#ff6600"; 
         if (style === 'flat_mod00') needleColor = "#e6ddcc";
@@ -1807,30 +1812,29 @@ function initKdsiEngine() {
         ctx.restore();
     }
 
-    /**
-     * Renderizza il quadrante rotondo KDSI con il colore dinamico 
-     * in base al tema attualmente attivo (Ambra, Classic, Pearl, ecc).
-     */
-    function renderKDSI(ctx, value, label) {
+    // --- INIZIO SISTEMA DI CACHE KDSI ---
+    let kdsiBgCache = {};
+
+    function renderKDSIToCtx(oCtx, label) {
         const cx = 180, cy = 255; 
         const rTop = 152, rBot = 146;
         const sAng = -Math.PI * 0.73, eAng = -Math.PI * 0.27;
 
-        ctx.clearRect(0, 0, 360, 360);
-        ctx.textBaseline = "middle"; 
-        ctx.textAlign = "center"; 
-        ctx.lineCap = "round";
+        oCtx.clearRect(0, 0, 360, 360);
+        oCtx.textBaseline = "middle"; 
+        oCtx.textAlign = "center"; 
+        oCtx.lineCap = "round";
 
-        ctx.strokeStyle = "rgba(10, 0, 0, 0.95)";
-        ctx.lineWidth = 2.5; 
-        ctx.beginPath(); 
-        ctx.arc(cx, cy, rTop, sAng, eAng); 
-        ctx.stroke();
+        oCtx.strokeStyle = "rgba(10, 0, 0, 0.95)";
+        oCtx.lineWidth = 2.5; 
+        oCtx.beginPath(); 
+        oCtx.arc(cx, cy, rTop, sAng, eAng); 
+        oCtx.stroke();
         
-        ctx.lineWidth = 1.2; 
-        ctx.beginPath(); 
-        ctx.arc(cx, cy, rBot, sAng, eAng); 
-        ctx.stroke();
+        oCtx.lineWidth = 1.2; 
+        oCtx.beginPath(); 
+        oCtx.arc(cx, cy, rBot, sAng, eAng); 
+        oCtx.stroke();
 
         const ticks = 40;
         const mTop = ["200","150","100","50","0","50","100","150","200"];
@@ -1841,55 +1845,80 @@ function initKdsiEngine() {
             let cos = Math.cos(a), sin = Math.sin(a);
 
             if (i % 5 === 0) {
-                ctx.lineWidth = 2.2; 
-                ctx.beginPath(); 
-                ctx.moveTo(cx + cos * rTop, cy + sin * rTop); 
-                ctx.lineTo(cx + cos * (rTop + 12), cy + sin * (rTop + 12)); 
-                ctx.stroke();
+                oCtx.lineWidth = 2.2; 
+                oCtx.beginPath(); 
+                oCtx.moveTo(cx + cos * rTop, cy + sin * rTop); 
+                oCtx.lineTo(cx + cos * (rTop + 12), cy + sin * (rTop + 12)); 
+                oCtx.stroke();
                 
-                drawRotatedText(ctx, mTop[i/5], rTop + 24, a, "bold 13px 'Helvetica Neue', Arial", "rgba(15,0,0,0.95)");
+                drawRotatedText(oCtx, mTop[i/5], rTop + 24, a, "bold 13px 'Helvetica Neue', Arial", "rgba(15,0,0,0.95)");
                 
-                ctx.lineWidth = 1.5; 
-                ctx.beginPath(); 
-                ctx.moveTo(cx + cos * rBot, cy + sin * rBot); 
-                ctx.lineTo(cx + cos * (rBot - 8), cy + sin * (rBot - 8)); 
-                ctx.stroke();
+                oCtx.lineWidth = 1.5; 
+                oCtx.beginPath(); 
+                oCtx.moveTo(cx + cos * rBot, cy + sin * rBot); 
+                oCtx.lineTo(cx + cos * (rBot - 8), cy + sin * (rBot - 8)); 
+                oCtx.stroke();
                 
-                drawRotatedText(ctx, mBot[i/5], rBot - 18, a, "bold 11px 'Helvetica Neue', Arial", "rgba(15,0,0,0.95)");
+                drawRotatedText(oCtx, mBot[i/5], rBot - 18, a, "bold 11px 'Helvetica Neue', Arial", "rgba(15,0,0,0.95)");
             } else {
-                ctx.lineWidth = 1.2; 
-                ctx.beginPath(); 
-                ctx.moveTo(cx + cos * rTop, cy + sin * rTop); 
-                ctx.lineTo(cx + cos * (rTop + 6), cy + sin * (rTop + 6)); 
-                ctx.stroke();
+                oCtx.lineWidth = 1.2; 
+                oCtx.beginPath(); 
+                oCtx.moveTo(cx + cos * rTop, cy + sin * rTop); 
+                oCtx.lineTo(cx + cos * (rTop + 6), cy + sin * (rTop + 6)); 
+                oCtx.stroke();
                 
-                ctx.beginPath(); 
-                ctx.moveTo(cx + cos * rBot, cy + sin * rBot); 
-                ctx.lineTo(cx + cos * (rBot - 4), cy + sin * (rBot - 4)); 
-                ctx.stroke();
+                oCtx.beginPath(); 
+                oCtx.moveTo(cx + cos * rBot, cy + sin * rBot); 
+                oCtx.lineTo(cx + cos * (rBot - 4), cy + sin * (rBot - 4)); 
+                oCtx.stroke();
             }
         }
         
-        drawRotatedText(ctx, "-", rTop + 22, sAng - 0.08, "bold 19px Arial", "rgba(10,0,0,0.95)");
-        drawRotatedText(ctx, "+", rTop + 22, eAng + 0.08, "bold 17px Arial", "rgba(10,0,0,0.95)");
+        drawRotatedText(oCtx, "-", rTop + 22, sAng - 0.08, "bold 19px Arial", "rgba(10,0,0,0.95)");
+        drawRotatedText(oCtx, "+", rTop + 22, eAng + 0.08, "bold 17px Arial", "rgba(10,0,0,0.95)");
 
-        ctx.fillStyle = "rgba(15, 0, 0, 0.95)";
-        ctx.font = "bold 16px 'Helvetica Neue', Arial"; 
-        ctx.fillText("mV.V", cx, cy - 90);
+        oCtx.fillStyle = "rgba(15, 0, 0, 0.95)";
+        oCtx.font = "bold 16px 'Helvetica Neue', Arial"; 
+        oCtx.fillText("mV.V", cx, cy - 90);
         
-        ctx.font = "bold 12px Arial"; 
-        ctx.fillText("KDSI", cx - 75, cy - 60);
+        oCtx.font = "bold 12px Arial"; 
+        oCtx.fillText("KDSI", cx - 75, cy - 60);
         
-        ctx.font = "10px Arial"; 
-        ctx.fillText("80-52", cx - 75, cy - 45);
+        oCtx.font = "10px Arial"; 
+        oCtx.fillText("80-52", cx - 75, cy - 45);
         
-        ctx.fillText("2.5  CE", cx + 75, cy - 60); 
-        ctx.fillText("F.S:DC±200mV", cx + 75, cy - 45);
+        oCtx.fillText("2.5  CE", cx + 75, cy - 60); 
+        oCtx.fillText("F.S:DC±200mV", cx + 75, cy - 45);
         
-        ctx.font = "bold 14px Arial"; 
-        ctx.fillStyle = "rgba(10,0,0,0.5)"; 
-        ctx.fillText(label, cx, cy - 120); 
+        oCtx.font = "bold 14px Arial"; 
+        oCtx.fillStyle = "rgba(10,0,0,0.5)"; 
+        oCtx.fillText(label, cx, cy - 120); 
+    }
 
+    function drawKDSIFaceWithCache(ctx, label) {
+        let cacheKey = label; 
+        if (!kdsiBgCache[cacheKey]) {
+            let offCanvas = document.createElement('canvas');
+            offCanvas.width = 360;
+            offCanvas.height = 360;
+            let oCtx = offCanvas.getContext('2d');
+            renderKDSIToCtx(oCtx, label);
+            kdsiBgCache[cacheKey] = offCanvas;
+        }
+        ctx.clearRect(0, 0, 360, 360);
+        ctx.drawImage(kdsiBgCache[cacheKey], 0, 0);
+    }
+    // --- FINE SISTEMA DI CACHE KDSI ---
+
+    function renderKDSI(ctx, value, label) {
+        const cx = 180, cy = 255; 
+        const rTop = 152;
+        const sAng = -Math.PI * 0.73, eAng = -Math.PI * 0.27;
+
+        // 1. Disegna lo sfondo precalcolato dalla cache (istantaneo!)
+        drawKDSIFaceWithCache(ctx, label);
+
+        // 2. Calcola e disegna solo l'ago
         const tAng = sAng + (value / 255) * (eAng - sAng);
         const nCos = Math.cos(tAng);
         const nSin = Math.sin(tAng);
@@ -1905,6 +1934,7 @@ function initKdsiEngine() {
 
         const needleL = rTop + 13;
         
+        ctx.lineCap = "round";
         ctx.strokeStyle = "rgba(0, 0, 0, 0.35)"; 
         ctx.lineWidth = 2; 
         ctx.beginPath(); 
@@ -1926,6 +1956,11 @@ function initKdsiEngine() {
         let isKdsi = styleSelect && kdsiThemes.includes(styleSelect.value);
         
         let isInlineActive = document.getElementById('inlineVuContainer') && document.getElementById('inlineVuContainer').style.display !== 'none';
+        
+        // FIX PRESTAZIONI: Disattiva il rendering in background se il salvaschermo copre l'interfaccia
+        if (typeof ssActive !== 'undefined' && ssActive) {
+            isInlineActive = false;
+        }
         
         let kdsiCont = document.getElementById('inlineKdsiContainer');
         let cvsL = document.getElementById('inlineVuLeft');

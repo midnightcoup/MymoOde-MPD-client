@@ -1,14 +1,93 @@
+/**
+ * ==========================================================
+ * MYMOODE CLIENT - SCRIPT PRINCIPALE (CORE)
+ * ==========================================================
+ * Gestione dello stato di MPD, UI responsiva, navigazione
+ * del catalogo musicale, e impostazioni del client.
+ */
+
 const API = 'mpd_bridge.php';
 
+// ==========================================
+// VARIABILI GLOBALI DI STATO
+// ==========================================
+let currentDuration = 0;
+let currentRepeat = '0';
+let currentRandom = '0';
+let rawInfoCache = {};
+let currentFolderPath = '';
+let searchString = '';
+let artistState = { artist: '', album: '' };
+let albumState = { active: false };
+let lastPlayingId = null;
+let isMuted = false;
+let preMuteVol = 50;
+let volumeOsdTimer = null;
+let lastKnownVolume = -1;
+let lastLocalVolumeChange = 0;
+
+let cachedSearchResults = [];
+let cachedFolders = { path: null, data: [] };
+let cachedAlbums = null;
+let cachedArtists = null;
+let cachedSubLevel = { id: null, data: [] };
+let cachedMpdRadios = null;
+let cachedRbRadios = null;
+let globalCoverCache = {};
+let universalFavorites = [];
+let lastFavJump = '';
+
+let statusAbortController = null;
+let isFetchingStatus = false; 
+
+/**
+ * Sanitizza le stringhe per prevenire rotture dell'HTML e attacchi XSS.
+ */
+function sanitizeHTML(str) {
+    if (!str) return '';
+    const temp = document.createElement('div');
+    temp.textContent = str;
+    return temp.innerHTML.replace(/'/g, "&apos;").replace(/"/g, "&quot;");
+}
+
+// ==========================================
+// INIZIALIZZAZIONE E TRADUZIONI
+// ==========================================
+
+try { 
+    universalFavorites = JSON.parse(localStorage.getItem('hifi_universal_favs')) || []; 
+} catch(e) { 
+    universalFavorites = []; 
+}
+
+let viewModes = { 
+    'folderGrid': 'grid', 
+    'albumGrid': 'grid', 
+    'artistGrid': 'list', 
+    'searchGrid': 'list', 
+    'radioListGrid': 'list' 
+};
+
+try { 
+    viewModes = { 
+        'folderGrid': localStorage.getItem('view_folderGrid') || 'grid', 
+        'albumGrid': localStorage.getItem('view_albumGrid') || 'grid', 
+        'artistGrid': localStorage.getItem('view_artistGrid') || 'list', 
+        'searchGrid': localStorage.getItem('view_searchGrid') || 'list', 
+        'radioListGrid': localStorage.getItem('view_radioListGrid') || 'list' 
+    }; 
+} catch(e) {}
+
+/**
+ * Gestisce l'installazione delle dipendenze al primo avvio del client.
+ */
 async function initFirstRun() {
     try {
         let res = await fetch(`${API}?action=check_first_run`);
         let data = await res.json();
         
-        // FIX: Se il server restituisce un errore globale (es. MPD Offline), bypassiamo l'installazione
         if (data.error) return true;
         
-        // Verifica rigorosa per evitare falsi positivi
         if (data.ready === false) {
             let overlay = document.createElement('div');
             overlay.style.cssText = 'position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.95); z-index:99999; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#00e676; font-family:-apple-system, sans-serif; text-align:center; padding:20px;';
@@ -25,7 +104,7 @@ async function initFirstRun() {
             if (installData.success) {
                 location.reload(); 
             } else { 
-                alert("Errore pacchettizzazione: " + (installData.error || 'Sconosciuto')); 
+                alert(t('msg_pkg_error') + (installData.error || t('msg_unknown'))); 
                 overlay.remove(); 
             }
             return false; 
@@ -36,6 +115,9 @@ async function initFirstRun() {
     }
 }
 
+/**
+ * Applica le traduzioni all'interfaccia.
+ */
 function applyTranslations(lang) {
     if (typeof localStorage !== 'undefined') localStorage.setItem('hifi_language', lang);
     if (typeof currentLang !== 'undefined') currentLang = lang;
@@ -66,61 +148,17 @@ function applyTranslations(lang) {
     }
 }
 
+/**
+ * Restituisce la stringa tradotta per una data chiave.
+ */
 function t(key) {
     let lng = (typeof currentLang !== 'undefined') ? currentLang : (localStorage.getItem('hifi_language') || 'it');
     return (typeof translations !== 'undefined' && translations[lng] && translations[lng][key]) ? translations[lng][key] : key;
 }
 
-// Variabili Globali
-let currentDuration = 0;
-let currentRepeat = '0';
-let currentRandom = '0';
-let rawInfoCache = {};
-let currentFolderPath = '';
-let searchString = '';
-let artistState = { artist: '', album: '' };
-let albumState = { active: false };
-let lastPlayingId = null;
-let isMuted = false;
-let preMuteVol = 50;
-let volumeOsdTimer = null;
-let lastKnownVolume = -1;
-let lastLocalVolumeChange = 0;
-
-let cachedSearchResults = [];
-let cachedFolders = { path: null, data: [] };
-let cachedAlbums = null;
-let cachedArtists = null;
-let cachedSubLevel = { id: null, data: [] };
-let cachedMpdRadios = null;
-let cachedRbRadios = null;
-let globalCoverCache = {};
-let universalFavorites = [];
-let lastFavJump = '';
-
-try { 
-    universalFavorites = JSON.parse(localStorage.getItem('hifi_universal_favs')) || []; 
-} catch(e) { 
-    universalFavorites = []; 
-}
-
-let viewModes = { 
-    'folderGrid': 'grid', 
-    'albumGrid': 'grid', 
-    'artistGrid': 'list', 
-    'searchGrid': 'list', 
-    'radioListGrid': 'list' 
-};
-
-try { 
-    viewModes = { 
-        'folderGrid': localStorage.getItem('view_folderGrid') || 'grid', 
-        'albumGrid': localStorage.getItem('view_albumGrid') || 'grid', 
-        'artistGrid': localStorage.getItem('view_artistGrid') || 'list', 
-        'searchGrid': localStorage.getItem('view_searchGrid') || 'list', 
-        'radioListGrid': localStorage.getItem('view_radioListGrid') || 'list' 
-    }; 
-} catch(e) {}
+// ==========================================
+// CONTROLLO VOLUME E UI
+// ==========================================
 
 function showVolumeOSD(vol, isMute = false) {
     let osd = document.getElementById('volumeOsd');
@@ -199,6 +237,10 @@ function toggleMute() {
     lastLocalVolumeChange = Date.now();
 }
 
+// ==========================================
+// ADATTAMENTO LAYOUT E TEMI
+// ==========================================
+
 function applyDeviceLayout() { 
     let lSelect = document.getElementById('deviceLayout');
     let layoutSetting = lSelect ? lSelect.value : 'auto';
@@ -276,8 +318,9 @@ function updateUITheme(style) {
     bLogo.className = "brand-logo " + fontClass;
 }
 
-let statusAbortController = null;
-let isFetchingStatus = false; 
+// ==========================================
+// GESTIONE STATO LETTORE (POLLING)
+// ==========================================
 
 async function fetchStatus() {
     if (isFetchingStatus) return; 
@@ -355,6 +398,38 @@ function updateNowPlaying(d) {
         let safeArtist = d.artist || t('msg_unknown');
         let safeAlbum = (d.raw_info && d.raw_info.album) ? d.raw_info.album : '-';
         
+        // --- LOGICA SORGENTI ESTERNE E TRADUZIONI (BLUETOOTH, SPOTIFY, ECC.) ---
+        let isSpecialSource = (d.active_source && d.active_source !== 'MPD');
+        let specialIcon = '';
+        let specialColor = '#fff';
+
+        if (d.active_source === 'BLUETOOTH') {
+            specialIcon = 'bi-bluetooth'; 
+            specialColor = '#0d6efd'; // Blu
+            if (safeTitle === t('msg_waiting') || safeTitle === '') safeTitle = t('src_bluetooth');
+        } else if (d.active_source === 'SPOTIFY') {
+            specialIcon = 'bi-spotify'; 
+            specialColor = '#1db954'; // Verde Spotify
+            if (safeTitle === t('msg_waiting') || safeTitle === '') safeTitle = t('src_spotify');
+        } else if (d.active_source === 'AIRPLAY') {
+            specialIcon = 'bi-apple'; 
+            specialColor = '#e0e0e0'; // Grigio chiaro
+            if (safeTitle === t('msg_waiting') || safeTitle === '') safeTitle = t('src_airplay');
+        } else if (d.active_source === 'ROON') {
+            specialIcon = 'bi-speaker'; 
+            specialColor = '#d1432f'; // Arancione scuro
+            if (safeTitle === t('msg_waiting') || safeTitle === '') safeTitle = t('src_roon');
+        } else if (isSpecialSource) {
+            specialIcon = 'bi-cast'; 
+            specialColor = 'var(--hl-color)';
+            if (safeTitle === t('msg_waiting') || safeTitle === '') safeTitle = d.active_source;
+        }
+
+        // Se suona Spotify/Bluetooth ma non sa chi è l'artista, mostra "In riproduzione..."
+        if (isSpecialSource && (safeArtist === t('msg_unknown') || safeArtist === '')) {
+            safeArtist = t('msg_playing');
+        }
+        
         let mainTitleEl = document.getElementById('mainTitle'); 
         if (mainTitleEl) mainTitleEl.textContent = safeTitle;
         
@@ -431,6 +506,10 @@ function updateNowPlaying(d) {
             }
         }
 
+        if (d.active_source && d.active_source !== 'MPD') {
+            codec = d.active_source;
+        }
+
         let finalCoverUrl = d.coverUrl || ''; 
         if (finalCoverUrl === '/coverart.php') finalCoverUrl = '';
 
@@ -447,7 +526,7 @@ function updateNowPlaying(d) {
                 let parts = fileStr.split('/'); 
                 stationNameTag = parts[parts.length - 1] || 'Web Radio'; 
             }
-            if (safeArtist === 'Sconosciuto' || safeArtist === '') { 
+            if (safeArtist === 'Sconosciuto' || safeArtist === '' || safeArtist === t('msg_unknown')) { 
                 safeArtist = stationNameTag; 
                 let mainArtistEl = document.getElementById('mainArtist'); 
                 if (mainArtistEl) mainArtistEl.textContent = safeArtist; 
@@ -557,7 +636,7 @@ function updateNowPlaying(d) {
             if (ssTrackInfo.textContent !== trackDisplay) ssTrackInfo.textContent = trackDisplay;
         }
 
-        let safeCover = finalCoverUrl ? finalCoverUrl.replace(/'/g, "\\'") : '';
+        let safeCover = finalCoverUrl ? finalCoverUrl.replace(/'/g, "&apos;") : '';
         let mainCoverEl = document.getElementById('mainCover');
         let dynBgEl = document.getElementById('dynamicBackground');
         let mpCoverEl = document.getElementById('mpCover');
@@ -565,6 +644,8 @@ function updateNowPlaying(d) {
         if (safeCover) {
             if (mainCoverEl && mainCoverEl.dataset.currentCover !== safeCover) { 
                 mainCoverEl.dataset.currentCover = safeCover; 
+                mainCoverEl.innerHTML = '';
+                mainCoverEl.style.backgroundColor = 'transparent';
                 mainCoverEl.style.backgroundImage = `url('${safeCover}')`; 
                 if (isStream) { 
                     mainCoverEl.style.backgroundSize = 'contain'; 
@@ -572,34 +653,60 @@ function updateNowPlaying(d) {
                 } else { 
                     mainCoverEl.style.backgroundSize = 'cover'; 
                 } 
-                mainCoverEl.querySelectorAll('i, img, svg').forEach(el => el.style.display = 'none'); 
             }
             if (dynBgEl && dynBgEl.dataset.currentCover !== safeCover) { 
                 dynBgEl.dataset.currentCover = safeCover; 
+                dynBgEl.style.backgroundColor = 'transparent';
                 dynBgEl.style.backgroundImage = `url('${safeCover}')`; 
-                dynBgEl.querySelectorAll('i, img, svg').forEach(el => el.style.display = 'none'); 
             }
             if (mpCoverEl && mpCoverEl.dataset.currentCover !== safeCover) { 
                 mpCoverEl.dataset.currentCover = safeCover; 
+                mpCoverEl.innerHTML = '';
+                mpCoverEl.style.backgroundColor = 'transparent';
                 mpCoverEl.style.backgroundImage = `url('${safeCover}')`; 
-                mpCoverEl.querySelectorAll('i, img, svg').forEach(el => el.style.display = 'none'); 
             }
         } else {
             if (fileChanged || (!isStream && titleChanged) || (!isStream && mainCoverEl && mainCoverEl.dataset.currentCover !== 'none')) {
-                if (mainCoverEl && mainCoverEl.dataset.currentCover !== 'none') { 
-                    mainCoverEl.dataset.currentCover = 'none'; 
-                    mainCoverEl.style.backgroundImage = 'var(--ss-faceplate)'; 
-                    mainCoverEl.querySelectorAll('i, img, svg').forEach(el => el.style.display = ''); 
-                }
-                if (dynBgEl && dynBgEl.dataset.currentCover !== 'none') { 
-                    dynBgEl.dataset.currentCover = 'none'; 
-                    dynBgEl.style.backgroundImage = 'radial-gradient(circle at 50% 30%, var(--hl-color) 0%, #000 80%)'; 
-                    dynBgEl.querySelectorAll('i, img, svg').forEach(el => el.style.display = ''); 
-                }
-                if (mpCoverEl && mpCoverEl.dataset.currentCover !== 'none') { 
-                    mpCoverEl.dataset.currentCover = 'none'; 
-                    mpCoverEl.style.backgroundImage = 'var(--ss-faceplate)'; 
-                    mpCoverEl.querySelectorAll('i, img, svg').forEach(el => el.style.display = ''); 
+                
+                // --- INIEZIONE ICONA A TEMA PER SORGENTI ESTERNE ---
+                if (isSpecialSource && specialIcon) {
+                    if (mainCoverEl && mainCoverEl.dataset.currentCover !== 'special') {
+                        mainCoverEl.dataset.currentCover = 'special';
+                        mainCoverEl.style.backgroundImage = 'none';
+                        mainCoverEl.style.backgroundColor = '#0a0a0a'; // Sfondo scuro per risaltare
+                        mainCoverEl.innerHTML = `<i class="bi ${specialIcon}" style="font-size: 8rem; color: ${specialColor}; display:flex; align-items:center; justify-content:center; height:100%; text-shadow: 0 0 25px ${specialColor}60;"></i>`;
+                    }
+                    if (dynBgEl && dynBgEl.dataset.currentCover !== 'special') {
+                        dynBgEl.dataset.currentCover = 'special';
+                        dynBgEl.style.backgroundImage = 'none';
+                        dynBgEl.style.backgroundColor = specialColor; // Colora lo sfondo sfocato
+                    }
+                    if (mpCoverEl && mpCoverEl.dataset.currentCover !== 'special') {
+                        mpCoverEl.dataset.currentCover = 'special';
+                        mpCoverEl.style.backgroundImage = 'none';
+                        mpCoverEl.style.backgroundColor = '#0a0a0a';
+                        mpCoverEl.innerHTML = `<i class="bi ${specialIcon}" style="font-size: 1.5rem; color: ${specialColor}; display:flex; align-items:center; justify-content:center; height:100%;"></i>`;
+                    }
+                } 
+                // Nessuna fonte esterna e nessuna copertina: usa il fallback di default
+                else {
+                    if (mainCoverEl && mainCoverEl.dataset.currentCover !== 'none') { 
+                        mainCoverEl.dataset.currentCover = 'none'; 
+                        mainCoverEl.innerHTML = '';
+                        mainCoverEl.style.backgroundColor = 'transparent';
+                        mainCoverEl.style.backgroundImage = 'var(--ss-faceplate)'; 
+                    }
+                    if (dynBgEl && dynBgEl.dataset.currentCover !== 'none') { 
+                        dynBgEl.dataset.currentCover = 'none'; 
+                        dynBgEl.style.backgroundColor = 'transparent';
+                        dynBgEl.style.backgroundImage = 'radial-gradient(circle at 50% 30%, var(--hl-color) 0%, #000 80%)'; 
+                    }
+                    if (mpCoverEl && mpCoverEl.dataset.currentCover !== 'none') { 
+                        mpCoverEl.dataset.currentCover = 'none'; 
+                        mpCoverEl.innerHTML = '';
+                        mpCoverEl.style.backgroundColor = 'transparent';
+                        mpCoverEl.style.backgroundImage = 'var(--ss-faceplate)'; 
+                    }
                 }
             }
         }
@@ -638,7 +745,7 @@ function updateNowPlaying(d) {
 
         if (typeof isStreamingActive !== 'undefined' && isStreamingActive) { 
             if (typeof disconnectCamilla === 'function') disconnectCamilla(); 
-        } else if (d.state === 'play') { 
+        } else if (d.state === 'play' || (d.active_source && d.active_source !== 'MPD')) { 
             if (typeof connectCamilla === 'function') connectCamilla(); 
         } else { 
             if (typeof disconnectCamilla === 'function') disconnectCamilla(); 
@@ -677,6 +784,10 @@ function updateNowPlaying(d) {
         console.error(err); 
     }
 }
+
+// ==========================================
+// COMPONENTI UI E VISTE (GRIGLIA/LISTA)
+// ==========================================
 
 function toggleView(containerId) {
     viewModes[containerId] = viewModes[containerId] === 'grid' ? 'list' : 'grid'; 
@@ -746,21 +857,22 @@ function buildItemHtml(mode, dataAttr, safeActionPath, imgUrl, title, subtitle, 
     let heartIcon = isFav ? 'bi-heart-fill' : 'bi-heart';
     let heartColor = isFav ? 'color: #dc3545;' : 'color: #aaa;';
     
-    let safeTitle = (title || '').replace(/'/g, "\\'");
-    let safeSub = (subtitle || '').replace(/'/g, "\\'");
-    let safeImg = (finalImgUrl || '').replace(/'/g, "\\'");
-    let safeIcon = iconClass.replace(/'/g, "\\'");
+    // Sanitizzazione massiva per sicurezza UI
+    let safeTitle = sanitizeHTML(title);
+    let safeSub = sanitizeHTML(subtitle);
+    let safeImg = sanitizeHTML(finalImgUrl);
+    let safeIcon = sanitizeHTML(iconClass);
     
     let favBtnHtml = `<button class="btn-addplay" style="margin-top:0; flex: 1; background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.1); ${heartColor}" onclick="toggleUniversalFav(this, '${pType}', '${safeActionPath}', '${safeTitle}', '${safeImg}', '${safeSub}', '${safeIcon}'); event.stopPropagation();" title="${t('tab_favs')}"><i class="bi ${heartIcon}"></i></button>`;
     
     let playBtnHtml = showPlayBtn ? 
         `<button class="btn-addplay" style="margin-top:0; flex: 3;" onclick="playAdd('${safeActionPath}', '${pType}', 'play'); event.stopPropagation();"><i class="bi bi-play-fill"></i> Play</button>
-         <button class="btn-addplay" style="margin-top:0; flex: 1; background: rgba(255,255,255,0.05);" onclick="playAdd('${safeActionPath}', '${pType}', 'enqueue'); event.stopPropagation();" title="Add to Queue"><i class="bi bi-plus-lg"></i></button>
+         <button class="btn-addplay" style="margin-top:0; flex: 1; background: rgba(255,255,255,0.05);" onclick="playAdd('${safeActionPath}', '${pType}', 'enqueue'); event.stopPropagation();" title="${t('tip_add_queue')}"><i class="bi bi-plus-lg"></i></button>
          ${favBtnHtml}` : 
         `<div style="flex:4;"></div>${favBtnHtml}`;
         
     let iconHtml = `<i class="bi ${iconClass}" ${finalImgUrl ? 'style="display:none;"' : ''}></i>`;
-    let imgHtml = `<img class="lazy-cover" ${finalImgUrl ? `src="${finalImgUrl}" data-loaded="true" style="display:block;"` : ''} onerror="this.style.display='none'; this.previousElementSibling.style.display='block';">`;
+    let imgHtml = `<img class="lazy-cover" ${finalImgUrl ? `src="${safeImg}" data-loaded="true" style="display:block;"` : ''} onerror="this.style.display='none'; this.previousElementSibling.style.display='block';">`;
 
     if (mode === 'grid') {
         return `
@@ -768,8 +880,8 @@ function buildItemHtml(mode, dataAttr, safeActionPath, imgUrl, title, subtitle, 
             <div class="grid-cover" onclick="${mainClick}" oncontextmenu="showContextMenu(event, '${safeActionPath}')">
                 ${iconHtml}${imgHtml}
             </div>
-            <div class="grid-title" onclick="${mainClick}">${title}</div>
-            <div class="grid-sub">${subtitle}</div>
+            <div class="grid-title" onclick="${mainClick}">${safeTitle}</div>
+            <div class="grid-sub">${safeSub}</div>
             <div style="display:flex; gap: 5px; margin-top:0.6rem;">${playBtnHtml}</div>
         </div>`;
     } else {
@@ -779,13 +891,17 @@ function buildItemHtml(mode, dataAttr, safeActionPath, imgUrl, title, subtitle, 
                 ${iconHtml}${imgHtml}
             </div>
             <div class="list-item-content" onclick="${mainClick}">
-                <div style="font-weight:bold; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${title}</div>
-                <div style="font-size:0.8rem; color:#aaa;">${subtitle}</div>
+                <div style="font-weight:bold; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${safeTitle}</div>
+                <div style="font-size:0.8rem; color:#aaa;">${safeSub}</div>
             </div>
             <div style="display:flex; gap: 5px; margin-left:10px; flex-shrink: 0; width: 180px;">${playBtnHtml}</div>
         </div>`;
     }
 }
+
+// ==========================================
+// LAZY LOADING COPERTINE
+// ==========================================
 
 const coverObserver = new IntersectionObserver((entries, observer) => {
     entries.forEach(entry => {
@@ -835,6 +951,10 @@ const coverObserver = new IntersectionObserver((entries, observer) => {
     });
 }, { root: null, rootMargin: '300px' });
 
+// ==========================================
+// GESTIONE IMPOSTAZIONI E BACKUP
+// ==========================================
+
 async function loadSettings() { 
     let hostname = window.location.hostname || "127.0.0.1"; 
     try { 
@@ -861,11 +981,7 @@ async function loadSettings() {
             localStorage.setItem('camilla_local_analyzer', defaultsToUse.localAnalyzer !== false); 
             localStorage.setItem('camilla_device_layout', defaultsToUse.deviceLayout || 'auto'); 
             if (defaultsToUse.wakeOnTrack !== undefined) localStorage.setItem('camilla_wake_on_track', defaultsToUse.wakeOnTrack);
-            
-            // Novità: Recupera anche lo stato del DSP dal salvataggio se disponibile
-            if (defaultsToUse.camillaDspState !== undefined) {
-                localStorage.setItem('camilla_dsp_state', defaultsToUse.camillaDspState);
-            }
+            if (defaultsToUse.camillaDspState !== undefined) localStorage.setItem('camilla_dsp_state', defaultsToUse.camillaDspState);
         }
     } catch (e) {} 
     
@@ -884,16 +1000,14 @@ async function loadSettings() {
     if (document.getElementById('deviceLayout')) document.getElementById('deviceLayout').value = localStorage.getItem('camilla_device_layout') || 'auto'; 
     if (document.getElementById('wakeOnTrackToggle')) document.getElementById('wakeOnTrackToggle').checked = localStorage.getItem('camilla_wake_on_track') !== 'false'; 
     
-    // --- GESTIONE REALE DEL DSP ALL'AVVIO ---
+    // Gestione DSP al caricamento
     let camillaTgl = document.getElementById('camillaDspToggle'); 
     if (camillaTgl) {
         let isDspActive = localStorage.getItem('camilla_dsp_state') === 'true';
         camillaTgl.checked = isDspActive;
-        
         let cmd = isDspActive ? 'camilladsp_on' : 'camilladsp_off';
-        fetch(`${API}?action=sys_control&cmd=${cmd}`).catch(e => console.error("Errore avvio DSP:", e));
+        fetch(`${API}?action=sys_control&cmd=${cmd}`).catch(e => console.error(e));
     }
-    // ----------------------------------------
     
     let inlineC = document.getElementById('inlineVuContainer');
     let inlTgl = document.getElementById('inlineVuToggle'); 
@@ -925,13 +1039,12 @@ async function saveClientSettings() {
         localAnalyzer: document.getElementById('localAnalyzerToggle').checked, 
         deviceLayout: document.getElementById('deviceLayout').value, 
         wakeOnTrack: document.getElementById('wakeOnTrackToggle') ? document.getElementById('wakeOnTrackToggle').checked : true,
-        // Includiamo lo stato del DSP nel payload
         camillaDspState: document.getElementById('camillaDspToggle') ? document.getElementById('camillaDspToggle').checked : false
     };
     
     let btn = document.getElementById('btnSaveClient');
     let originalHtml = btn.innerHTML; 
-    btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Salvataggio...';
+    btn.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + t('msg_saving');
     
     try { 
         await fetch(`${API}?action=save_client_settings`, { 
@@ -940,26 +1053,26 @@ async function saveClientSettings() {
             body: JSON.stringify(payload) 
         }); 
         
-        btn.innerHTML = '<i class="bi bi-check-circle-fill"></i> Configurazione Salvata'; 
+        btn.innerHTML = '<i class="bi bi-check-circle-fill"></i> ' + t('msg_config_saved'); 
         btn.style.color = '#000'; 
         setTimeout(() => { 
             btn.innerHTML = originalHtml; 
             btn.style.color = '#000'; 
         }, 3000); 
     } catch (e) { 
-        alert("Errore durante il salvataggio."); 
+        alert(t('msg_save_error')); 
         btn.innerHTML = originalHtml; 
     }
 }
 
 async function restoreDefaultSettings() { 
-    if (confirm("Vuoi eliminare la configurazione permanente di questo dispositivo e ripristinare i valori globali?")) { 
+    if (confirm(t('confirm_restore_defaults'))) { 
         try { 
             await fetch(`${API}?action=delete_client_settings`); 
             localStorage.clear(); 
             location.reload(); 
         } catch (e) { 
-            alert("Errore durante il ripristino."); 
+            alert(t('msg_restore_error')); 
         } 
     } 
 }
@@ -992,6 +1105,10 @@ function saveSettings() {
     let deviceLayout = document.getElementById('deviceLayout') ? document.getElementById('deviceLayout').value : 'auto';
     let wakeOnTrack = document.getElementById('wakeOnTrackToggle') ? document.getElementById('wakeOnTrackToggle').checked : true;
     
+    // Sincronizza i valori per il renderLoop ad alte prestazioni (evita chiamate al DOM)
+    if (typeof currentRenderStyle !== 'undefined') currentRenderStyle = vuStyle;
+    if (typeof isInlineRenderActive !== 'undefined') isInlineRenderActive = inlineVu;
+
     localStorage.setItem('camilla_ss_timeout', ssTimeout); 
     localStorage.setItem('camilla_ss_random', ssRandom); 
     localStorage.setItem('camilla_vu_style', vuStyle); 
@@ -1067,15 +1184,45 @@ window.onload = async () => {
     }
 };
 
-// Modificato intervallo da 400 a 1000 per salvaguardare la memoria
-setInterval(fetchStatus, 400); 
+// ==========================================
+// GESTIONE TIMER E PROGRESS BAR
+// ==========================================
 
+// 1. Chiedi lo stato al server ogni 2 secondi (Molto più leggero per CPU/Rete)
+setInterval(fetchStatus, 2000); 
+
+// 2. Fai avanzare la barra di scorrimento fluidamente in locale (ogni 250ms)
+setInterval(() => {
+    let btnPlay = document.getElementById('btnPlay');
+    if (currentDuration > 0 && btnPlay && btnPlay.innerHTML.includes('pause-fill')) {
+        let elElapsed = document.getElementById('timeElapsed');
+        let progFill = document.getElementById('progressFill');
+        let mpProgress = document.getElementById('mpProgress');
+        
+        let currentWidth = parseFloat(progFill.style.width) || 0;
+        let newWidth = currentWidth + ((0.25 / currentDuration) * 100);
+        
+        if (newWidth <= 100) {
+            if (progFill) progFill.style.width = newWidth + '%';
+            if (mpProgress) mpProgress.style.width = newWidth + '%';
+            
+            let simulatedSeconds = (newWidth / 100) * currentDuration;
+            if (elElapsed) elElapsed.textContent = formatTime(simulatedSeconds);
+        }
+    }
+}, 250);
+
+// 3. Ricaricamento Coda automatica
 setInterval(() => { 
     let qTab = document.getElementById('tab-queue'); 
     if (qTab && qTab.classList.contains('active')) {
         loadQueue(false); 
     }
 }, 5000);
+
+// ==========================================
+// COMANDI DI RIPRODUZIONE (MPD) E SORGENTI
+// ==========================================
 
 async function sendCmd(cmd, param = '', type = '') { 
     let btnPlay = document.getElementById('btnPlay');
@@ -1087,7 +1234,6 @@ async function sendCmd(cmd, param = '', type = '') {
         finalCmd = isCurrentlyPlaying ? (isStream ? 'stop' : 'pause') : 'play'; 
     }
     
-    // QUI C'ERA L'ERRORE: mancava la parentesi tonda dopo l'if
     if (['play', 'next', 'previous', 'playid'].includes(finalCmd)) { 
         ['btnPlay', 'ssBtnPlay', 'mpBtnPlay'].forEach(id => { 
             let btn = document.getElementById(id); 
@@ -1215,6 +1361,7 @@ async function savePlaylist() {
         alert(t('msg_playlist_saved')); 
     } 
 }
+
 async function loadPlaylists() { 
     let plGrid = document.getElementById('playlistGrid'); 
     if (plGrid) plGrid.innerHTML = `<div style="padding:2rem; text-align:center;">${t('msg_loading')}</div>`; 
@@ -1225,7 +1372,7 @@ async function loadPlaylists() {
     let html = ''; 
     data.forEach(p => { 
         let safeP = p.replace(/'/g, "\\'");
-        let sortChar = p ? p.charAt(0).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase() : '#'; 
+        let sortChar = p ? p.charAt(0).normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase() : '#'; 
         if (!/[A-Z]/.test(sortChar)) sortChar = '#'; 
         
         html += `
@@ -1268,6 +1415,10 @@ function deletePlaylist(name) {
         }); 
     } 
 }
+
+// ==========================================
+// NAVIGAZIONE LIBRERIA E RICERCA
+// ==========================================
 
 async function loadFolders(path, useCache = false) {
     currentFolderPath = path; 
@@ -1584,7 +1735,7 @@ async function doSearch(useCache = false) {
                 } 
             } 
         } catch (err) { 
-            if (sg) sg.innerHTML = '<div style="grid-column:1/-1; text-align:center; color: #dc3545; padding: 2rem;">Errore Server.</div>'; 
+            if (sg) sg.innerHTML = `<div style="grid-column:1/-1; text-align:center; color: #dc3545; padding: 2rem;">${t('msg_error')}</div>`; 
             return; 
         } 
     }
@@ -1676,6 +1827,10 @@ async function clearRackCache(btn) {
     } 
 }
 
+// ==========================================
+// FILTRI ALFABETICI E PREFERITI
+// ==========================================
+
 function initAlphaFilters() {
     const containers = { 
         'alpha-webradio': 'radioListGrid', 
@@ -1693,7 +1848,7 @@ function initAlphaFilters() {
         
         let html = ''; 
         chars.forEach(c => { 
-            let label = c === 'ALL' ? 'Tutti' : c;
+            let label = c === 'ALL' ? t('alpha_all') : c;
             let active = c === 'ALL' ? 'active' : ''; 
             html += `<button class="alpha-btn ${active}" onclick="applyAlphaFilter('${targetGrid}', '${c}', this, '${containerId}')">${label}</button>`; 
         }); 
@@ -1783,7 +1938,7 @@ function renderFavorites() {
         'directory': { label: t('item_folder'), icon: 'bi-folder2-open', items: [] }, 
         'album': { label: t('item_album'), icon: 'bi-disc', items: [] }, 
         'artist': { label: t('item_artist'), icon: 'bi-person-lines-fill', items: [] }, 
-        'file': { label: 'Web Radio & Tracce', icon: 'bi-broadcast', items: [] }, 
+        'file': { label: 'Web Radio & Tracks', icon: 'bi-broadcast', items: [] }, 
         'playlist': { label: t('item_playlist'), icon: 'bi-music-note-list', items: [] } 
     };
     
@@ -1841,11 +1996,9 @@ function jumpToFavCategory(sectionId) {
     } 
 }
 
-let savedRadios = JSON.parse(localStorage.getItem('hifi_webradios')) || [ 
-    { name: "Radio Paradise FLAC (Main)", url: "http://stream.radioparadise.com/flac", cover: "" }, 
-    { name: "Radio Paradise Rock FLAC", url: "http://stream.radioparadise.com/rock-flac", cover: "" }, 
-    { name: "Sector Radio FLAC", url: "http://sectorradio.ru:8000/sector-flac", cover: "" } 
-];
+// ==========================================
+// RADIO PERSONALIZZATE E MOODE
+// ==========================================
 
 async function renderRadioList(useCache = false) {
     const container = document.getElementById('radioListGrid'); 
@@ -1855,15 +2008,15 @@ async function renderRadioList(useCache = false) {
     container.className = mode === 'grid' ? 'grid-container' : 'list-container';
     let html = '';
     
-    if (savedRadios.length > 0) { 
-        html += '<div class="radio-group-header" style="grid-column:1/-1; width: 100%; padding: 0.5rem 1rem; color: var(--hl-color); font-weight: bold; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 0.5rem;">Stazioni Personalizzate</div>'; 
+    if (typeof savedRadios !== 'undefined' && savedRadios.length > 0) { 
+        html += `<div class="radio-group-header" style="grid-column:1/-1; width: 100%; padding: 0.5rem 1rem; color: var(--hl-color); font-weight: bold; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 0.5rem;">${t('hdr_webradio_custom')}</div>`; 
         
         savedRadios.forEach((radio, index) => { 
             const safeUrl = radio.url.replace(/'/g, "\\'");
             const coverDisplay = radio.cover ? `src="${radio.cover}" style="display:block;"` : `style="display:none;"`;
             const iconDisplay = radio.cover ? 'style="display:none;"' : ''; 
             
-            let sortChar = radio.name ? radio.name.charAt(0).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase() : '#'; 
+            let sortChar = radio.name ? radio.name.charAt(0).normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase() : '#'; 
             if (!/[A-Z]/.test(sortChar)) sortChar = '#'; 
             
             let isFav = universalFavorites.some(f => f.path === radio.url);
@@ -1872,10 +2025,10 @@ async function renderRadioList(useCache = false) {
             let safeName = (radio.name || '').replace(/'/g, "\\'");
             let safeCover = (radio.cover || '').replace(/'/g, "\\'"); 
             
-            let btnPlay = `<button class="btn-addplay" style="width: auto; flex: 1 1 auto; margin-top:0; padding: 0.5rem 0.8rem;" onclick="playAdd('${safeUrl}', 'file', 'play')" title="Ascolta"><i class="bi bi-play-fill"></i></button>`;
-            let btnFav = `<button class="btn-addplay" style="width: auto; flex: 1 1 auto; margin-top:0; padding: 0.5rem 0.8rem; background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.1); ${heartColor}" onclick="toggleUniversalFav(this, 'file', '${safeUrl}', '${safeName}', '${safeCover}', 'Web Radio (Custom)', 'bi-broadcast'); event.stopPropagation();" title="Preferiti"><i class="bi ${heartIcon}"></i></button>`;
-            let btnEdit = `<button class="btn-addplay" style="width: auto; flex: 1 1 auto; margin-top:0; padding: 0.5rem 0.8rem; border-color:rgba(13,110,253,0.5); color:#0d6efd; background:rgba(13,110,253,0.1);" onclick="editRadio(${index})" title="Modifica"><i class="bi bi-pencil"></i></button>`;
-            let btnDel = `<button class="btn-addplay" style="width: auto; flex: 1 1 auto; margin-top:0; padding: 0.5rem 0.8rem; border-color:rgba(220,53,69,0.5); color:#dc3545; background:rgba(220,53,69,0.1);" onclick="deleteRadio(${index})" title="Elimina"><i class="bi bi-trash3"></i></button>`;
+            let btnPlay = `<button class="btn-addplay" style="width: auto; flex: 1 1 auto; margin-top:0; padding: 0.5rem 0.8rem;" onclick="playAdd('${safeUrl}', 'file', 'play')" title="${t('tip_listen')}"><i class="bi bi-play-fill"></i></button>`;
+            let btnFav = `<button class="btn-addplay" style="width: auto; flex: 1 1 auto; margin-top:0; padding: 0.5rem 0.8rem; background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.1); ${heartColor}" onclick="toggleUniversalFav(this, 'file', '${safeUrl}', '${safeName}', '${safeCover}', 'Web Radio (Custom)', 'bi-broadcast'); event.stopPropagation();" title="${t('tip_favorites')}"><i class="bi ${heartIcon}"></i></button>`;
+            let btnEdit = `<button class="btn-addplay" style="width: auto; flex: 1 1 auto; margin-top:0; padding: 0.5rem 0.8rem; border-color:rgba(13,110,253,0.5); color:#0d6efd; background:rgba(13,110,253,0.1);" onclick="editRadio(${index})" title="${t('tip_edit')}"><i class="bi bi-pencil"></i></button>`;
+            let btnDel = `<button class="btn-addplay" style="width: auto; flex: 1 1 auto; margin-top:0; padding: 0.5rem 0.8rem; border-color:rgba(220,53,69,0.5); color:#dc3545; background:rgba(220,53,69,0.1);" onclick="deleteRadio(${index})" title="${t('tip_delete')}"><i class="bi bi-trash3"></i></button>`;
 
             if (mode === 'grid') { 
                 html += `
@@ -1885,7 +2038,7 @@ async function renderRadioList(useCache = false) {
                         <img class="lazy-cover" id="radio-cover-${index}" ${coverDisplay}>
                     </div>
                     <div class="grid-title" onclick="playAdd('${safeUrl}', 'file', 'play')">${radio.name}</div>
-                    <div class="grid-sub">Web Radio (Custom)</div>
+                    <div class="grid-sub">${t('item_webradio_custom')}</div>
                     <div style="display:flex; gap: 5px; margin-top:0.6rem; flex-wrap: wrap;">${btnPlay}${btnFav}${btnEdit}${btnDel}</div>
                 </div>`; 
             } else { 
@@ -1920,7 +2073,7 @@ async function renderRadioList(useCache = false) {
     }
     
     if (cachedMpdRadios.length > 0) { 
-        html += '<div class="radio-group-header" style="grid-column:1/-1; width: 100%; padding: 0.5rem 1rem; color: var(--hl-color); font-weight: bold; border-bottom: 1px solid rgba(255,255,255,0.1); margin-top: 1.5rem; margin-bottom: 0.5rem;">Web Radio moOde</div>'; 
+        html += `<div class="radio-group-header" style="grid-column:1/-1; width: 100%; padding: 0.5rem 1rem; color: var(--hl-color); font-weight: bold; border-bottom: 1px solid rgba(255,255,255,0.1); margin-top: 1.5rem; margin-bottom: 0.5rem;">${t('hdr_webradio_moode')}</div>`; 
         cachedMpdRadios.forEach(d => { 
             let safePath = d.file.replace(/'/g, "\\'").replace(/"/g, '&quot;');
             let cleanName = (d.name || d.title || '').replace(/\.(pls|m3u|m3u8)$/i, ''); 
@@ -1929,7 +2082,7 @@ async function renderRadioList(useCache = false) {
     }
     
     if (cachedRbRadios.length > 0) { 
-        html += '<div class="radio-group-header" style="grid-column:1/-1; width: 100%; padding: 0.5rem 1rem; color: var(--hl-color); font-weight: bold; border-bottom: 1px solid rgba(255,255,255,0.1); margin-top: 1.5rem; margin-bottom: 0.5rem;">Radio Browser (Recenti)</div>'; 
+        html += `<div class="radio-group-header" style="grid-column:1/-1; width: 100%; padding: 0.5rem 1rem; color: var(--hl-color); font-weight: bold; border-bottom: 1px solid rgba(255,255,255,0.1); margin-top: 1.5rem; margin-bottom: 0.5rem;">${t('hdr_webradio_recent')}</div>`; 
         cachedRbRadios.forEach(d => { 
             let safePath = d.file.replace(/'/g, "\\'").replace(/"/g, '&quot;');
             let cleanName = (d.name || '').replace(/\.(pls|m3u|m3u8)$/i, ''); 
@@ -1951,6 +2104,8 @@ function addCustomRadio() {
         return; 
     } 
     
+    if (typeof savedRadios === 'undefined') window.savedRadios = [];
+    
     savedRadios.push({ 
         name: nameInput.value.trim(), 
         url: urlInput.value.trim(), 
@@ -1965,6 +2120,7 @@ function addCustomRadio() {
 }
 
 function editRadio(index) { 
+    if (typeof savedRadios === 'undefined') return;
     const r = savedRadios[index]; 
     document.getElementById('newRadioName').value = r.name; 
     document.getElementById('newRadioUrl').value = r.url; 
@@ -1979,12 +2135,17 @@ function editRadio(index) {
 }
 
 function deleteRadio(index) { 
+    if (typeof savedRadios === 'undefined') return;
     if (confirm(`${t('confirm_delete_radio')} "${savedRadios[index].name}"?`)) { 
         savedRadios.splice(index, 1); 
         localStorage.setItem('hifi_webradios', JSON.stringify(savedRadios)); 
         renderRadioList(); 
     } 
 }
+
+// ==========================================
+// UPLOAD COPERTINE LOCALI (FILE INPUT)
+// ==========================================
 
 function changeCover(folderPath) {
     let input = document.createElement('input'); 
@@ -1996,7 +2157,7 @@ function changeCover(folderPath) {
         if (!file) return;
         
         if (file.size > 2 * 1024 * 1024) { 
-            alert(`L'immagine è troppo pesante. Il limite è 2MB.`); 
+            alert(t('msg_img_too_big')); 
             return; 
         }
 
@@ -2004,7 +2165,7 @@ function changeCover(folderPath) {
         img.onload = function() {
             URL.revokeObjectURL(this.src);
             if (this.width > 1200 || this.height > 1200) { 
-                alert(`Le dimensioni dell'immagine (${this.width}x${this.height}) superano il limite massimo di 1200x1200 pixel.`); 
+                alert(t('msg_img_dim_exceeded').replace('{w}', this.width).replace('{h}', this.height)); 
                 return; 
             }
             
@@ -2016,20 +2177,24 @@ function changeCover(folderPath) {
             .then(res => res.json())
             .then(data => {
                 if (data.success) { 
-                    alert("Copertina aggiornata con successo! Clicca sulla Sincronizzazione per ricaricare."); 
-                    if (typeof clearRackCache === 'function') clearRackCache(); 
+                    alert(t('msg_cover_updated')); 
+                    if (typeof clearRackCache === 'function') clearRackCache(null); 
                 } else { 
-                    alert("Errore durante il salvataggio della copertina."); 
+                    alert(t('msg_cover_save_error')); 
                 }
-            }).catch(err => alert("Errore di rete durante l'upload."));
+            }).catch(err => alert(t('msg_net_upload_error')));
         };
         img.onerror = function() { 
-            alert("File immagine non valido o corrotto."); 
+            alert(t('msg_img_invalid')); 
         };
         img.src = URL.createObjectURL(file);
     };
     input.click();
 }
+
+// ==========================================
+// FUNZIONI ACCESSORIE DI SISTEMA
+// ==========================================
 
 let mouseIdleTimer;
 function resetMouseTimer() {
@@ -2105,30 +2270,14 @@ function importConfig(input) {
             Object.keys(config).forEach(key => { 
                 localStorage.setItem(key, config[key]); 
             });
-            alert("Configurazione ripristinata con successo! L'interfaccia si riavvierà."); 
+            alert(t('msg_import_success')); 
             location.reload(); 
         } catch (err) { 
-            alert("Errore nel file di backup. Assicurati che sia un file JSON valido."); 
+            alert(t('msg_import_error')); 
         }
     };
     reader.readAsText(file);
 }
-
-setInterval(() => {
-    try {
-        let labels = JSON.parse(localStorage.getItem('customLabels') || '{}');
-        let select = document.getElementById('vuStyleSelect');
-        
-        if (select) { 
-            Array.from(select.options).forEach(opt => { 
-                let key = opt.value.replace('vu_', ''); 
-                if (labels[key] && labels[key].trim() !== '') { 
-                    opt.textContent = labels[key]; 
-                } 
-            }); 
-        }
-    } catch(e) {}
-}, 1500);
 
 function toggleCamillaDSP(checked) {
     let cmd = checked ? 'camilladsp_on' : 'camilladsp_off';
@@ -2157,6 +2306,10 @@ function toggleCamillaDSP(checked) {
         });
 }
 
+// ==========================================
+// SCRAPER WEB PER LE COPERTINE (ITUNES API)
+// ==========================================
+
 function openWebCoverSearch(path) {
     let cleanString = path.split('/').pop();
     cleanString = cleanString.replace(/\[.*?\]|\(.*?\)/g, '').trim(); 
@@ -2172,13 +2325,13 @@ function searchWebCover() {
     if (!query) return;
     
     let resultsDiv = document.getElementById('webCoverResults');
-    resultsDiv.innerHTML = '<div style="color:var(--hl-color); grid-column:1/-1; text-align:center;"><i class="bi bi-hourglass-split"></i> Ricerca nel database globale...</div>';
+    resultsDiv.innerHTML = `<div style="color:var(--hl-color); grid-column:1/-1; text-align:center;"><i class="bi bi-hourglass-split"></i> ${t('msg_scraper_search')}</div>`;
 
     fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=album&limit=15`)
     .then(res => res.json())
     .then(data => {
         if (data.results.length === 0) { 
-            resultsDiv.innerHTML = '<div style="color:#dc3545; grid-column:1/-1; text-align:center;">Nessun risultato trovato. Prova a semplificare il testo della ricerca.</div>'; 
+            resultsDiv.innerHTML = `<div style="color:#dc3545; grid-column:1/-1; text-align:center;">${t('msg_scraper_no_res')}</div>`; 
             return; 
         }
         
@@ -2196,26 +2349,26 @@ function searchWebCover() {
         });
         resultsDiv.innerHTML = html;
     }).catch(e => { 
-        resultsDiv.innerHTML = '<div style="color:#dc3545; grid-column:1/-1; text-align:center;">Errore di rete durante la connessione al database.</div>'; 
+        resultsDiv.innerHTML = `<div style="color:#dc3545; grid-column:1/-1; text-align:center;">${t('msg_scraper_err')}</div>`; 
     });
 }
 
 function downloadWebCover(imageUrl) {
     let resultsDiv = document.getElementById('webCoverResults');
-    resultsDiv.innerHTML = '<div style="color:var(--hl-color); grid-column:1/-1; text-align:center; font-size:1.2rem;"><i class="bi bi-cloud-arrow-down-fill"></i> Download e iniezione nel server in corso...</div>';
+    resultsDiv.innerHTML = `<div style="color:var(--hl-color); grid-column:1/-1; text-align:center; font-size:1.2rem;"><i class="bi bi-cloud-arrow-down-fill"></i> ${t('msg_scraper_down')}</div>`;
     
     fetch(`${API}?action=download_web_cover&folder=${encodeURIComponent(activeContextMenuPath)}&url=${encodeURIComponent(imageUrl)}`)
     .then(res => res.json())
     .then(data => { 
         if (data.success) { 
             document.getElementById('webCoverModal').style.display = 'none'; 
-            if (typeof clearRackCache === 'function') clearRackCache(); 
+            if (typeof clearRackCache === 'function') clearRackCache(null); 
         } else { 
-            alert("Errore durante il salvataggio: " + data.error); 
+            alert(t('msg_cover_save_error_web') + data.error); 
             searchWebCover(); 
         }
     }).catch(e => { 
-        alert("Errore di comunicazione con il server locale."); 
+        alert(t('msg_local_server_error')); 
     });
 }
 
@@ -2261,12 +2414,27 @@ function showContextMenu(e, actionPath) {
     };
 }
 
-function initKdsiEngine() {
-    // Gestito e sovrascritto in salvaschermo.js, 
-    // mantenuto qui per evitare errori di dipendenza in assenza dell'altro file.
-}
+// Intervallo di aggiornamento dinamico nomi personalizzati
+setInterval(() => {
+    try {
+        let labels = JSON.parse(localStorage.getItem('customLabels') || '{}');
+        let select = document.getElementById('vuStyleSelect');
+        
+        if (select) { 
+            Array.from(select.options).forEach(opt => { 
+                let key = opt.value.replace('vu_', ''); 
+                if (labels[key] && labels[key].trim() !== '') { 
+                    opt.textContent = labels[key]; 
+                } 
+            }); 
+        }
+    } catch(e) {}
+}, 1500);
 
-// --- GESTIONE MANUALE DELLA ROTELLA VOLUME ORIZZONTALE ---
+// ==========================================
+// ROTELLA VOLUME ORIZZONTALE (TOUCH/WHEEL)
+// ==========================================
+
 document.addEventListener('DOMContentLoaded', () => {
     let volWheel = document.getElementById('volWheelUI');
     let volContainer = document.getElementById('volWheelContainer');
@@ -2275,9 +2443,27 @@ document.addEventListener('DOMContentLoaded', () => {
     
     let isDraggingWheel = false;
     let startX = 0;
-    let startVol = 0;
+    let startPx = 0; 
+    const PIXELS_PER_GIRO = 110; 
 
-    // Sincronizza la grafica della rotella in orizzontale
+    function volToPx(v) {
+        if (v <= 70) {
+            return (v / 70) * (3 * PIXELS_PER_GIRO);
+        } else {
+            return (3 * PIXELS_PER_GIRO) + (((v - 70) / 30) * (4 * PIXELS_PER_GIRO));
+        }
+    }
+
+    function pxToVol(px) {
+        let maxPxFase1 = 3 * PIXELS_PER_GIRO;
+        if (px <= maxPxFase1) {
+            return (px / maxPxFase1) * 70;
+        } else {
+            let maxPxFase2 = 4 * PIXELS_PER_GIRO;
+            return 70 + (((px - maxPxFase1) / maxPxFase2) * 30);
+        }
+    }
+
     function syncWheelVisuals(val, isDragging = false) {
         let v = Math.max(0, Math.min(100, parseFloat(val) || 0));
         
@@ -2285,7 +2471,6 @@ document.addEventListener('DOMContentLoaded', () => {
             volWheel.style.transition = isDragging ? 'none' : 'background-position 0.2s ease-out';
             volWheel.style.backgroundPosition = `${v * 12}px 0px`;
         }
-        
         if (volText) volText.textContent = Math.round(v);
     }
 
@@ -2299,20 +2484,18 @@ document.addEventListener('DOMContentLoaded', () => {
         volContainer.addEventListener('pointerdown', (e) => {
             isDraggingWheel = true;
             startX = e.clientX; 
-            startVol = parseFloat(hiddenSlider.value) || 0;
+            let startVol = parseFloat(hiddenSlider.value) || 0;
+            startPx = volToPx(startVol);
             document.body.style.userSelect = 'none'; 
         });
 
         window.addEventListener('pointermove', (e) => {
             if (!isDraggingWheel) return;
-            
-            let sensitivity = 0.3; 
             let deltaX = e.clientX - startX; 
-            
-            let rawVol = Math.max(0, Math.min(100, startVol + (deltaX * sensitivity)));
+            let currentPx = Math.max(0, Math.min(7 * PIXELS_PER_GIRO, startPx + deltaX));
+            let rawVol = pxToVol(currentPx);
             
             syncWheelVisuals(rawVol, true);
-            
             let displayVol = Math.round(rawVol);
             showVolumeOSD(displayVol, displayVol === 0);
         });
@@ -2321,22 +2504,20 @@ document.addEventListener('DOMContentLoaded', () => {
             if (isDraggingWheel) {
                 isDraggingWheel = false;
                 document.body.style.userSelect = '';
-                
                 let deltaX = e.clientX - startX;
-                let sensitivity = 0.3;
-                let finalVol = Math.round(Math.max(0, Math.min(100, startVol + (deltaX * sensitivity))));
+                let currentPx = Math.max(0, Math.min(7 * PIXELS_PER_GIRO, startPx + deltaX));
+                let finalVol = Math.round(pxToVol(currentPx));
                 
                 if (hiddenSlider) hiddenSlider.value = finalVol;
                 setVolume(finalVol); 
             }
         });
 
-        // Rotellina del mouse o touchpad
         volContainer.addEventListener('wheel', (e) => {
             e.preventDefault();
-            let dir = (e.deltaY < 0 || e.deltaX > 0) ? 2 : -2; 
-            let current = parseInt(hiddenSlider.value) || 0;
-            let newVol = Math.max(0, Math.min(100, current + dir));
+            let currentVol = parseInt(hiddenSlider.value) || 0;
+            let dir = (e.deltaY < 0 || e.deltaX > 0) ? 1 : -1; 
+            let newVol = Math.max(0, Math.min(100, currentVol + dir));
             
             if (hiddenSlider) hiddenSlider.value = newVol;
             syncWheelVisuals(newVol, false);
@@ -2344,3 +2525,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }, {passive: false});
     }
 });
+
+function initKdsiEngine() {
+    // Il motore reale vive in salvaschermo.js
+}

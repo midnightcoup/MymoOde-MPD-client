@@ -51,8 +51,10 @@
             margin-top: 0; margin-bottom: 5px;
             color: #fff; font-size: 0.85rem; font-weight: normal;
         }
-        .label-grid input {
+        .label-grid input, .label-grid select {
             padding: 0.6rem; font-size: 0.9rem;
+            border-radius: 6px; background: rgba(0,0,0,0.5); 
+            border: 1px solid rgba(255,255,255,0.1); color: #fff;
         }
     </style>
 </head>
@@ -171,9 +173,9 @@
                 <input type="text" id="defMoodeUrl" placeholder="es. http://192.168.1.50">
             </div>
 
-            <!-- BLOCCO 3: PERSONALIZZAZIONE ETICHETTE -->
+            <!-- BLOCCO 3: PERSONALIZZAZIONE ETICHETTE E BALISTICA -->
             <div class="settings-card" style="flex: 1 1 100%;">
-                <h3><i class="bi bi-fonts"></i> Personalizzazione Etichette (Opzionale)</h3>
+                <h3><i class="bi bi-fonts"></i> Personalizzazione Etichette e Motore (Opzionale)</h3>
                 <p class="hint" style="margin-bottom: 1.5rem; font-size: 0.85rem;">Se desideri sostituire i nomi di fantasia predefiniti con altri nomi a tua scelta, inseriscili qui sotto. Lasciando il campo vuoto verrà utilizzato il nome di fabbrica dell'interfaccia.</p>
 
                 <h4 style="color: var(--hl-color); margin-top: 5px; margin-bottom: 15px; font-size: 1.05rem;">Hi-Fi Studio Racks (VU Meter)</h4>
@@ -208,7 +210,21 @@
                     <div><label>Compact 65</label><input type="text" id="lbl_compact_mod65" placeholder="Personalizza testo..."></div>
                 </div>
 
-                <!-- PULSANTE RIPRISTINA NOMI -->
+                <!-- NUOVA SEZIONE: BALISTICA A TENDINA -->
+                <h4 style="color: var(--hl-color); margin-top: 15px; margin-bottom: 15px; font-size: 1.05rem;">Balistica Aghi VU Meter</h4>
+                <div class="label-grid" style="grid-template-columns: 1fr;">
+                    <div>
+                        <label>Comportamento e Dinamica dell'Ago</label>
+                        <select id="lbl_vu_dynamics">
+                            <option value="0.15,0.88">Elastico Classico (Consigliato - Rimbalzo naturale anni '70)</option>
+                            <option value="0.28,0.78">Scatto Veloce (Nervoso e reattivo per ritmi veloci)</option>
+                            <option value="0.08,0.94">Molla Libera (Inerzia estrema, molto "ballerino")</option>
+                            <option value="0.12,0.82">Originale di Fabbrica (Standard Mymoode, leggermente smorzato)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- PULSANTE RIPRISTINA NOMI E BALISTICA -->
                 <div style="margin-top: 2rem; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 1.5rem; text-align: right;">
                     <button class="btn-addplay" style="width: auto; display: inline-flex; background: rgba(220,53,69,0.15); color: #ff6b6b; border-color: rgba(220,53,69,0.4); padding: 12px 20px;" onclick="resetCustomLabels()">
                         <i class="bi bi-eraser-fill"></i> Ripristina Etichette di Fabbrica
@@ -233,7 +249,8 @@
     <script>
         const API = 'mpd_bridge.php';
         const rackModels = ['blue_mod70', 'blue_mono_mod1000', 'champagne_mod73', 'vfd_mod85', 'vintage_mod60', 'waves_mod99', 'studio_mod77', 'dark_meter_mod88', 'british_mod90', 'light_meter_mod88', 'cyan_meter_mod88', 'neon_mod95', 'minimal_mod00', 'orange_mod70', 'tube_mod50', 'flat_mod00', 'touch_mod15', 'amber_mod75'];
-        const radioModels = ['radica_mod58', 'bakelite_mod35', 'compact_mod65', 'transistor_mod68', 'console_mod55', 'teutonia_mod54'];
+        // Ho inserito vu_dynamics qui
+        const radioModels = ['radica_mod58', 'bakelite_mod35', 'compact_mod65', 'transistor_mod68', 'console_mod55', 'teutonia_mod54', 'vu_dynamics'];
         const allModels = rackModels.concat(radioModels);
 
         /**
@@ -245,7 +262,7 @@
                 let labels = JSON.parse(localStorage.getItem('customLabels') || '{}');
                 allModels.forEach(m => {
                     let el = document.getElementById('lbl_' + m);
-                    if (el) el.value = labels[m] || '';
+                    if (el) el.value = labels[m] || (m === 'vu_dynamics' ? '0.15,0.88' : '');
                 });
             } catch(e) {}
 
@@ -338,7 +355,8 @@
             if (confirm("Vuoi davvero cancellare tutte le tue etichette personalizzate e tornare ai nomi originali di fabbrica?")) {
                 allModels.forEach(m => {
                     let el = document.getElementById('lbl_' + m);
-                    if (el) el.value = '';
+                    // Resetta al valore di default "Elastico Classico" se è il menu a tendina, altrimenti svuota
+                    if (el) el.value = m === 'vu_dynamics' ? '0.15,0.88' : '';
                 });
                 localStorage.removeItem('customLabels');
                 saveGlobalDefaults(); 
