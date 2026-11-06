@@ -128,7 +128,33 @@
         };
     }
 
+    // Shared with other add-ons (the Neon Bars skin): tone, volume and the latest status
+    function exposeApi() {
+        const slider = document.getElementById('volSlider');
+        let volTimer = null;
+        window.MymoodeExtras = {
+            status: null,
+            tone: () => ({ bass: state.bass, treble: state.treble, limit: LIMIT }),
+            setTone: (kind, v) => setTone(kind, v),
+            volume: () => (slider ? parseInt(slider.value) || 0 : 0),
+            setVolume: v => {
+                v = Math.max(0, Math.min(100, Math.round(v)));
+                if (slider) slider.value = v;
+                clearTimeout(volTimer);
+                volTimer = setTimeout(() => typeof window.setVolume === 'function' && window.setVolume(v), 150);
+            },
+        };
+        const original = window.updateNowPlaying;
+        if (typeof original === 'function') {
+            window.updateNowPlaying = function (d) {
+                window.MymoodeExtras.status = d;
+                return original.apply(this, arguments);
+            };
+        }
+    }
+
     function init() {
+        exposeApi();
         document.querySelectorAll('.knob-container').forEach(c => {
             // Match by i18n key (labels get translated); the second skin has plain English labels
             const lab = c.querySelector('.hw-label');

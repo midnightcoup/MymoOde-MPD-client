@@ -13,7 +13,7 @@ define('HIFI_DEFAULT_SETTINGS', '/var/www/vumeter/cache/default_settings.json');
 define('MOODE_DB_PATH', '/var/local/www/db/moode-sqlite3.db');
 
 $action = $_GET['action'] ?? 'status';
-// moode-tweaks routes v2: knobs -> tone.py, transport buttons -> transport.py
+// moode-tweaks routes v3: knobs -> tone.py, transport buttons -> transport.py, Neon Bars -> spotmeta
 if ($action === 'tone') {
     $op = ($_GET['op'] ?? 'get') === 'set' ? 'set' : 'get';
     $args = $op === 'set' ? ' ' . escapeshellarg((string) floatval($_GET['bass'] ?? 0)) . ' ' . escapeshellarg((string) floatval($_GET['treble'] ?? 0)) : '';
@@ -25,6 +25,11 @@ if ($action === 'transport') {
     echo shell_exec('python3 ' . escapeshellarg(__DIR__ . '/transport.py') . ' ' . escapeshellarg($cmd) . ' 2>/dev/null') ?: '{"ok":true,"route":"mpd"}';
     exit;
 }
+if ($action === 'spotmeta') {
+    echo @file_get_contents('/var/local/www/spotmeta.json') ?: '{}';
+    exit;
+}
+// end moode-tweaks routes
 
 $no_mpd_actions = [
     'sys_control', 'sys_optimize', 'get_default_settings', 'set_default_settings', 

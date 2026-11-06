@@ -24,7 +24,19 @@ This is a fork of [casamia67/mymoode-MPD-client](https://github.com/casamia67/my
   * **Bluetooth:** sent to the phone over AVRCP (BlueZ `MediaPlayer1`), if the device supports it.
   * **Spotify Connect / AirPlay:** a short message says to use the Spotify app or the casting device, since librespot has no local control interface.
 
-New files: `extras.js` (loaded by `index.html`), `tone.py` and `transport.py`, with two small routes (`action=tone`, `action=transport`) in `mpd_bridge.php`. Both helpers need `python3` and PyYAML, which moOde already includes.
+### Neon Bars screensaver skin
+
+A full-screen cyberpunk skin. Pick **Neon Bars · Donkey ベイビー** in the VU style menu.
+
+* **Three neon bar meters: left, sub and right.** They read CamillaDSP's playback levels directly, so a 3-channel crossover config gets a live subwoofer meter. With a 2-channel config the sub column shows "offline". Each meter has an accurate dB scale, a live readout and peak hold, and goes amber above -6 dB and white-hot near 0.
+* **A living city:** layered skyline with haze, traffic on elevated roads, flying cars, searchlights, gas flares, a holographic advert, neon shop signs, and distant motorbike riders. The foreground has wet-street reflections, puddle ripples, steam vents and drifting motes.
+* **A hanging "DONKEY ♡ ベイビー" neon sign**, with the occasional flickering letter.
+* **Now playing** in the top-left corner, including Spotify Connect titles from moOde's Spotify metadata, plus the sample rate, channel count and signal status.
+* **Bass, treble and volume sliders** on a console under the meters. They use the same controls as the knobs.
+* **Efficient:** it draws on its own canvas only while the screensaver is showing, and stops completely otherwise. If a device can't hold about 40 fps, it switches to a lighter mode with fewer effects.
+* **Works offline:** fonts are bundled in `fonts/` (Tilt Neon, Orbitron, Share Tech Mono and a Noto Sans JP subset, all SIL OFL 1.1). `fetch-fonts.sh` re-downloads them.
+
+New files: `extras.js` and `neonbars.js` (loaded by `index.html`), `tone.py`, `transport.py` and `fonts/`, with three small routes (`action=tone`, `action=transport`, `action=spotmeta`) in `mpd_bridge.php`. The helpers need `python3` and PyYAML, which moOde already includes.
 
 ## 🚀 Main Features
 
