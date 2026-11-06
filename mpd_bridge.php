@@ -13,6 +13,18 @@ define('HIFI_DEFAULT_SETTINGS', '/var/www/vumeter/cache/default_settings.json');
 define('MOODE_DB_PATH', '/var/local/www/db/moode-sqlite3.db');
 
 $action = $_GET['action'] ?? 'status';
+// moode-tweaks routes v2: knobs -> tone.py, transport buttons -> transport.py
+if ($action === 'tone') {
+    $op = ($_GET['op'] ?? 'get') === 'set' ? 'set' : 'get';
+    $args = $op === 'set' ? ' ' . escapeshellarg((string) floatval($_GET['bass'] ?? 0)) . ' ' . escapeshellarg((string) floatval($_GET['treble'] ?? 0)) : '';
+    echo shell_exec('python3 ' . escapeshellarg(__DIR__ . '/tone.py') . ' ' . $op . $args . ' 2>/dev/null') ?: '{"ok":false,"error":"tone.py failed"}';
+    exit;
+}
+if ($action === 'transport') {
+    $cmd = preg_replace('/[^a-z]/', '', $_GET['cmd'] ?? '');
+    echo shell_exec('python3 ' . escapeshellarg(__DIR__ . '/transport.py') . ' ' . escapeshellarg($cmd) . ' 2>/dev/null') ?: '{"ok":true,"route":"mpd"}';
+    exit;
+}
 
 $no_mpd_actions = [
     'sys_control', 'sys_optimize', 'get_default_settings', 'set_default_settings', 
@@ -135,9 +147,9 @@ function get_cached_cover_url($file) {
 try {
     if ($action === 'sys_control') {
         $cmd = $_GET['cmd'] ?? '';
-        if ($cmd === 'camilladsp_on') { exec('sudo systemctl start camilladsp'); echo json_encode(['success' => true, 'state' => 'on']); } 
-        else if ($cmd === 'camilladsp_off') { exec('sudo systemctl stop camilladsp'); echo json_encode(['success' => true, 'state' => 'off']); } 
-        else if ($cmd === 'camilladsp_status') { $status = trim(exec('sudo systemctl is-active camilladsp')); echo json_encode(['success' => true, 'active' => ($status === 'active')]); }
+        if ($cmd === 'camilladsp_on') { /* moode-tweaks: DSP runs via moode's ALSA plugin */ echo json_encode(['success' => true, 'state' => 'on']); } 
+        else if ($cmd === 'camilladsp_off') { /* moode-tweaks: DSP runs via moode's ALSA plugin */ echo json_encode(['success' => true, 'state' => 'off']); } 
+        else if ($cmd === 'camilladsp_status') { $status = trim((shell_exec('pgrep -x camilladsp') ? 'active' : 'inactive')); echo json_encode(['success' => true, 'active' => ($status === 'active')]); }
         else { echo json_encode(['success' => false, 'error' => 'Comando sconosciuto']); }
         exit;
     }
@@ -769,7 +781,7 @@ try {
                 @$db->exec("UPDATE cfg_system SET value='0' WHERE param='volmute'");
                 $db->close();
             }
-            exec('PATH=/usr/local/bin:/usr/bin:/bin /var/www/command/vol.sh ' . $vol . ' > /dev/null 2>&1 &');
+            exec('PATH=/usr/local/bin:/usr/bin:/bin /var/www/util/vol.sh ' . $vol . ' > /dev/null 2>&1 &');
         }
         else if ($cmd === 'playid') $mpd_cmd = 'playid ' . intval($param);
         else if ($cmd === 'seek') $mpd_cmd = 'seekcur ' . intval($param);
@@ -839,7 +851,7 @@ try {
         
         if ($result !== false) {
             @chmod($coverFile, 0666);
-            exec("php /var/www/command/thumb-gen.php > /dev/null 2>&1 &");
+            exec("php /var/www/util/thumb-gen.php > /dev/null 2>&1 &");
             echo json_encode(['success' => true]);
         } else {
             $hash = md5($cleanFolder);
