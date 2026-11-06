@@ -4,6 +4,28 @@
 
 Born from a passion for high fidelity and historical design, this project combines modern digital music library management with a nostalgic visual experience, introducing dynamic screensavers that faithfully recreate the aesthetics of vintage radios and great classic Hi-Fi amplifiers.
 
+## 🔧 About this fork
+
+This is a fork of [casamia67/mymoode-MPD-client](https://github.com/casamia67/mymoode-MPD-client) with fixes for **moOde 10.x** and working hardware controls on the Hi-Fi screensavers. Tested on moOde 10.3.7 (Raspberry Pi 5) with CamillaDSP 4.1.3.
+
+### Fixes for moOde 10
+
+* **CamillaDSP ON/OFF no longer breaks audio.** moOde runs CamillaDSP through its ALSA plugin, one instance per stream. The original toggle started the standalone `camilladsp.service`, which takes the DAC and websocket port 1234, so every source (MPD, Spotify, Bluetooth, AirPlay) failed with "device busy". The toggle now does nothing, and the status shows whether CamillaDSP is actually processing audio.
+* **Updated moOde paths:** `vol.sh` and `thumb-gen.php` moved from `/var/www/command/` to `/var/www/util/` in moOde 10.
+* **No more flashing text:** the pages declare `lang="it"`, so browsers auto-translate them, and every 2-second status refresh re-triggered the translation. The pages are now marked `translate="no"`; choose the language in the app's settings instead.
+
+### Working knobs and buttons
+
+* **BASS / TREBLE knobs** control two CamillaDSP filters named `Bass` (Lowshelf 85 Hz, Q 0.9) and `Treble` (Highshelf 6500 Hz, Q 0.7), CamillaGUI's recommended Equalizer setup, over ±12 dB. Drag up/down or scroll to turn, and double-click to reset. `tone.py` adds the filters to the active config at 0 dB, saves knob changes to the config file (so they survive the per-stream CamillaDSP restarts), and updates the running instance live. CamillaGUI's own Bass/Treble shortcuts control the same filters.
+* **VOLUME knob** uses the client's normal volume control and follows volume changes made elsewhere.
+* **Knob drags no longer change the VU skin:** the screensaver's swipe gesture ignores drags that start on a knob.
+* **Play / pause, previous, next, repeat and shuffle follow the active player.** `transport.py` checks which renderer is feeding the DAC (CamillaDSP's parent process), falling back to moOde's `btactive` / `spotactive` / `aplactive` flags:
+  * **MPD:** unchanged.
+  * **Bluetooth:** sent to the phone over AVRCP (BlueZ `MediaPlayer1`), if the device supports it.
+  * **Spotify Connect / AirPlay:** a short message says to use the Spotify app or the casting device, since librespot has no local control interface.
+
+New files: `extras.js` (loaded by `index.html`), `tone.py` and `transport.py`, with two small routes (`action=tone`, `action=transport`) in `mpd_bridge.php`. Both helpers need `python3` and PyYAML, which moOde already includes.
+
 ## 🚀 Main Features
 
 * **Complete Library Management:** Smooth music exploration by Albums, Artists, Folders (including NAS and USB), and advanced Web Radio management (with the ability to add custom stations and logos).
@@ -33,7 +55,7 @@ Two main visual categories are included:
 
 ## ⚙️ Advanced Technical Integrations
 
-* **CamillaDSP Integration:** Direct control (ON/OFF) of the DSP processor and real-time RMS signal reading via WebSocket to animate the VU Meters with hardware precision, bypassing the limitations of browser audio analysis.
+* **CamillaDSP Integration:** Direct control (ON/OFF) of the DSP processor and real-time RMS signal reading via WebSocket to animate the VU Meters with hardware precision, bypassing the limitations of browser audio analysis. *(In this fork the ON/OFF toggle is disabled on moOde 10; see [About this fork](#-about-this-fork).)*
 * **Smart Home Ready (API Endpoints):** The system exposes dedicated URLs (e.g., `mpd_bridge.php?action=search&q={TEXT}&autoplay=true`) perfect for being called by **Home Assistant** or **Alexa** (via `rest_command`) to start music playback using voice commands.
 * **Global Administration Panel:** Through `admin.html`, it is possible to configure default behaviors (Screensaver timeout, Default theme, Layout) that will be automatically distributed to any new tablet or smartphone connecting to the system.
 * **Backup & Restore:** JSON format export and import of all UI preferences, saved radio stations, and user favorites.
@@ -49,7 +71,7 @@ Installation is simple and automated for Debian/Raspberry Pi OS-based systems (a
    ```
 3. Clone the repository:
    ```bash
-   git clone https://github.com/casamia67/mymoode-MPD-client.git vumeter
+   git clone https://github.com/midnightcoup/MymoOde-MPD-client.git vumeter
    ```
 4. Enter the directory and run the installation script:
    ```bash
